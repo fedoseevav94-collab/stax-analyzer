@@ -40,7 +40,7 @@ TG_ENDPOINTS = {
 }
 CLIENT_APP_URL = "https://rest-api.stax.ru/v1/test/client_app/chat/export/"
 WAZZUP_CHANNELS_URL = "https://rest-api.stax.ru/v1/test/wazzup/channels/"
-WAZZUP_MESSAGES_URL = "https://rest-api.stax.ru/v1/test/wazzup/channels/"
+WAZZUP_MESSAGES_URL_TEMPLATE = "https://rest-api.stax.ru/v1/test/wazzup/chat/export/{channel_id}/"
 
 # ── Константы ─────────────────────────────────────────────────────────────────
 HTTP_TIMEOUT = 60
