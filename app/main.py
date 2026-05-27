@@ -1,6 +1,6 @@
 """
 STAX AI QA Monitor — точка входа.
-Запускается GitHub Actions каждый день в 19:00 МСК.
+Запускается GitHub Actions каждый день в 20:00 МСК.
 """
 import sys
 
@@ -8,7 +8,7 @@ from app import config
 from app.ai.providers import get_stats as ai_stats
 from app.analyzers.pipeline import analyze_source
 from app.config import (
-    TG_ENDPOINTS, CLIENT_APP_URL, WAZZUP_CHANNELS_URL, WAZZUP_MESSAGES_URL,
+    TG_ENDPOINTS, CLIENT_APP_URL, WAZZUP_MESSAGES_URL_TEMPLATE,
     AI_FAILURE_THRESHOLD, CONFIDENCE_THRESHOLD, DEDUP_WINDOW_DAYS, MoscowTZ,
 )
 from app.db.postgres import (
@@ -127,10 +127,11 @@ def run() -> None:
         if not channel_id:
             continue
         logger.info(f"Wazzup канал: {channel_title} ({channel_id})")
+        wazzup_url = WAZZUP_MESSAGES_URL_TEMPLATE.format(channel_id=channel_id)
         convs = fetch_conversations(
-            WAZZUP_MESSAGES_URL,
-            period["fetch_start_ts"], period["fetch_end_ts"],
-            extra_params={"channel_id": channel_id},
+            wazzup_url,
+            period["fetch_start_ts"],
+            period["fetch_end_ts"],
         )
         logger.info(f"Диалогов выгружено: {len(convs)}")
         if convs:
