@@ -1,0 +1,38 @@
+name: STAX Daily Analysis
+
+on:
+  schedule:
+    # 20:00 МСК = 17:00 UTC
+    - cron: '0 17 * * *'
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run analysis
+        run: python -m app.main
+        env:
+          STAX_TOKEN: ${{ secrets.STAX_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          CONFIDENCE_THRESHOLD: ${{ secrets.CONFIDENCE_THRESHOLD }}
+          DEDUP_WINDOW_DAYS: ${{ secrets.DEDUP_WINDOW_DAYS }}
+          AI_BATCH_DELAY_SECONDS: ${{ secrets.AI_BATCH_DELAY_SECONDS }}
+          WAZZUP_FRONTEND_BASE_URL: ${{ secrets.WAZZUP_FRONTEND_BASE_URL }}
+          CLIENT_APP_FRONTEND_BASE_URL: ${{ secrets.CLIENT_APP_FRONTEND_BASE_URL }}
