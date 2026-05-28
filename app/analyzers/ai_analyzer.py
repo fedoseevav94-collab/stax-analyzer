@@ -11,6 +11,38 @@ from app.config import CONFIDENCE_THRESHOLD, AI_BATCH_DELAY_SECONDS
 from app.logger import logger
 from app.utils.text import clean_text, normalize_category
 
+ALLOWED_AI_CATEGORIES = {
+    "ГРУБОСТЬ",
+    "НЕКОМПЕТЕНТНОСТЬ",
+    "КОНФЛИКТ",
+}
+
+
+def calculate_priority(category: str, severity: str, client_quote: str = "", description: str = "") -> str:
+    category = normalize_category(category)
+    sev = (severity or "").strip().lower()
+    risk_text = f"{client_quote} {description}".lower().replace("ё", "е")
+    churn_or_blame = any(
+        phrase in risk_text
+        for phrase in (
+            "уйду", "уходим", "расторг", "конкурент", "верните деньги",
+            "обман", "жаловаться", "жалоб", "в суд", "претензи",
+            "обвиня", "виноват", "ужас", "кошмар",
+        )
+    )
+
+    if category in {"БЕЗ_ОТВЕТА", "ГРУБОСТЬ"}:
+        return "P1"
+    if category == "КОНФЛИКТ" and (sev == "высокая" or churn_or_blame):
+        return "P1"
+    if churn_or_blame:
+        return "P1"
+    if category == "НЕКОМПЕТЕНТНОСТЬ":
+        return "P2"
+    if category == "КОНФЛИКТ" and sev == "средняя":
+        return "P2"
+    return "P3"
+
 
 def _extract_json(raw: str) -> dict:
     raw = (raw or "").strip().replace("```json", "").replace("```", "").strip()
@@ -30,7 +62,7 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
     4. client_quote если есть — тоже реально есть.
     """
     category = normalize_category(problem.get("category"))
-    if category not in {"ГРУБОСТЬ", "НЕКОМПЕТЕНТНОСТЬ", "КОНФЛИКТ", "БЕЗ_ПРИВЕТСТВИЯ"}:
+    if category not in ALLOWED_AI_CATEGORIES:
         logger.info(f"[SKIP CAT] {conv['conversation_id']}: неизвестная категория {category!r}")
         return None
 
@@ -55,32 +87,42 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
     if category == "КОНФЛИКТ" and not client_quote:
         logger.info(f"[SKIP NO_CLIENT_Q] {conv['conversation_id']} КОНФЛИКТ: нет цитаты клиента")
         return None
-    if category == "БЕЗ_ПРИВЕТСТВИЯ" and not emp_quote:
-        logger.info(f"[SKIP NO_Q] {conv['conversation_id']} БЕЗ_ПРИВЕТСТВИЯ: нет цитаты сотрудника")
-        return None
 
     reasoning = clean_text(problem.get("reasoning")) or "—"
     description = f"{reasoning} Цитата сотрудника: «{emp_quote}»"
     if client_quote:
         description += f" Реакция на: «{client_quote}»"
+    severity = clean_text(problem.get("severity")) or "средняя"
 
     return {
         "category": category,
         "description": description,
-        "severity": clean_text(problem.get("severity")) or "средняя",
+        "severity": severity,
         "confidence": confidence,
         "employee_quote": emp_quote,
         "client_quote": client_quote,
+        "priority": calculate_priority(category, severity, client_quote, description),
     }
 
 
-def analyze_with_ai(candidates: list) -> list:
+def _empty_stats(candidates_count: int) -> dict:
+    return {
+        "candidates": candidates_count,
+        "processed": 0,
+        "skipped_low_priority": 0,
+        "errors": 0,
+        "rate_limited": False,
+    }
+
+
+def analyze_with_ai(candidates: list) -> tuple[list, dict]:
     """
     Принимает список нормализованных диалогов (уже прошедших детерминированные проверки).
-    Возвращает список issues с проблемами.
+    Возвращает (issues, stats).
     """
+    stats = _empty_stats(len(candidates))
     if not candidates:
-        return []
+        return [], stats
 
     batches = make_batches(candidates)
     logger.info(f"AI-анализ: {len(candidates)} диалогов, пачек: {len(batches)}")
@@ -88,13 +130,25 @@ def analyze_with_ai(candidates: list) -> list:
     conv_by_id = {c["conversation_id"]: c for c in candidates}
     all_issues = []
     current_delay = AI_BATCH_DELAY_SECONDS
+    rate_limited_mode = False
 
     for idx, batch in enumerate(batches, start=1):
+        if rate_limited_mode:
+            p1_batch = [c for c in batch if c.get("ai_candidate_priority") == "P1"]
+            skipped = len(batch) - len(p1_batch)
+            if skipped:
+                stats["skipped_low_priority"] += skipped
+                logger.info(f"[AI RATE LIMIT] Пачка {idx}: пропущено P2-кандидатов: {skipped}")
+            if not p1_batch:
+                continue
+            batch = p1_batch
+
         logger.info(f"Пачка {idx}/{len(batches)} ({len(batch)} диалогов)...")
         hit_rate_limit = False
         try:
             raw = call_ai(ANALYSIS_SYSTEM, build_analysis_prompt(batch))
             parsed = _extract_json(raw)
+            stats["processed"] += len(batch)
 
             for item in parsed.get("issues", []) or []:
                 cid = str(item.get("conversation_id", "")).strip()
@@ -112,20 +166,25 @@ def analyze_with_ai(candidates: list) -> list:
                         "chat_type": base["chat_type"],
                         "dialog_link": base["dialog_link"],
                         "first_client_msg": base["first_client_msg"],
+                        "topic": base.get("topic", "Другое"),
                         "problems": validated,
                     })
 
             current_delay = max(AI_BATCH_DELAY_SECONDS, int(current_delay * 0.8))
 
         except Exception as e:
+            stats["errors"] += 1
             logger.error(f"[ОШИБКА пачки {idx}] {type(e).__name__}: {e}")
             if "429" in str(e) or "RATE_LIMIT" in str(e):
                 hit_rate_limit = True
 
         if hit_rate_limit:
+            stats["rate_limited"] = True
+            rate_limited_mode = True
             current_delay = min(60, current_delay * 2)
             logger.info(f"Адаптивная пауза увеличена до {current_delay} сек")
+            logger.info("AI rate limit: дальше обрабатываются только P1-кандидаты")
 
         time.sleep(current_delay)
 
-    return all_issues
+    return all_issues, stats
