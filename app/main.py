@@ -19,7 +19,7 @@ from app.db.postgres import (
 from app.exporters.base import fetch_conversations
 from app.exporters.wazzup import fetch_wazzup_channels
 from app.logger import logger
-from app.telegram.sender import format_report, send_telegram
+from app.telegram.sender import format_additional_report, format_report, send_telegram_messages
 from app.utils.text import clean_text, normalize_category
 from app.utils.time_utils import get_period_timestamps
 
@@ -203,7 +203,10 @@ def run() -> None:
     logger.info("=" * 60)
     report = format_report(fresh_issues, total_count, period, run_status, weekly_top, analysis_totals)
     logger.info(report)
-    send_telegram(report)
+    additional_report = format_additional_report(fresh_issues)
+    if additional_report:
+        logger.info(additional_report)
+    send_telegram_messages([report, additional_report])
     logger.info("Готово ✓")
 
 
