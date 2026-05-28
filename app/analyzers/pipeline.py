@@ -4,8 +4,8 @@
 import re
 
 from app.analyzers.deterministic import (
+    check_no_greeting,
     check_no_reply,
-    check_response_time,
     has_client_message,
     has_employee_reply,
 )
@@ -136,7 +136,7 @@ def _employee_short_after_complaint(messages: list) -> bool:
     return False
 
 
-def should_send_to_ai(conv: dict) -> tuple[bool, str, str]:
+def _ai_filter_decision(conv: dict) -> tuple[bool, str, str]:
     """
     Возвращает (send, candidate_priority, reason).
     P1 здесь означает только приоритет обработки AI-кандидата при лимитах.
@@ -170,6 +170,11 @@ def should_send_to_ai(conv: dict) -> tuple[bool, str, str]:
     return False, "P3", "нет признаков риска"
 
 
+def should_send_to_ai(conv: dict) -> bool:
+    send, _, _ = _ai_filter_decision(conv)
+    return send
+
+
 def _merge_issues_by_conversation(issues: list) -> list:
     merged: dict = {}
     for issue in issues:
@@ -185,8 +190,7 @@ def _merge_issues_by_conversation(issues: list) -> list:
 
 
 def analyze_source(conversations: list, chat_type: str, source: str,
-                   chat_id: str = "", channel_id: str = "",
-                   analysis_end_ts: int | None = None) -> tuple[list, int, dict]:
+                   chat_id: str = "", channel_id: str = "") -> tuple[list, int, dict]:
     """
     Возвращает (issues, total_dialogs_count, analysis_stats).
     """
@@ -205,6 +209,7 @@ def analyze_source(conversations: list, chat_type: str, source: str,
     deduped = list(by_id.values())
     if len(deduped) < len(normalized):
         logger.info(f"Дедуп выгрузки: {len(normalized)} → {len(deduped)} диалогов")
+    logger.info(f"После дедупа: {len(deduped)}")
 
     all_issues: list = []
     ai_candidates: list = []
@@ -220,15 +225,15 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         emp = (conv.get("employee") or "").strip().lower()
         is_bot = emp in BOT_EMPLOYEES
 
-        no_reply_issue = check_no_reply(conv, analysis_end_ts=analysis_end_ts)
+        no_reply_issue = check_no_reply(conv)
         if no_reply_issue:
             all_issues.append(no_reply_issue)
         elif has_employee_reply(conv["messages"]) and not is_bot:
-            slow_reply_issue = check_response_time(conv)
-            if slow_reply_issue:
-                all_issues.append(slow_reply_issue)
+            no_greeting_issue = check_no_greeting(conv)
+            if no_greeting_issue:
+                all_issues.append(no_greeting_issue)
 
-            should_send, priority, reason = should_send_to_ai(conv)
+            should_send, priority, reason = _ai_filter_decision(conv)
             if should_send:
                 conv["ai_candidate_priority"] = priority
                 logger.info(f"[AI CANDIDATE] {conv['conversation_id']} {priority}: {reason}")
@@ -245,7 +250,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
 
     stats = {
         "source_name": chat_type,
-        "loaded": len(deduped),
+        "loaded": len(normalized),
+        "after_dedup": len(deduped),
         "sent_to_ai": len(ai_candidates),
         "skipped_by_filter": skipped_by_filter,
         "problems": sum(len(i.get("problems", [])) for i in all_issues),
@@ -260,12 +266,14 @@ def analyze_source(conversations: list, chat_type: str, source: str,
     if source == "wazzup":
         logger.info(f"Wazzup канал: {chat_type}")
         logger.info(f"Выгружено: {stats['loaded']}")
+        logger.info(f"После дедупа: {stats['after_dedup']}")
         logger.info(f"Отправлено в AI: {stats['sent_to_ai']}")
         logger.info(f"Пропущено фильтром: {stats['skipped_by_filter']}")
         logger.info(f"Проблем: {stats['problems']}")
     else:
         logger.info(f"Источник: {chat_type}")
         logger.info(f"Выгружено диалогов: {stats['loaded']}")
+        logger.info(f"После дедупа: {stats['after_dedup']}")
         logger.info(f"Отправлено в AI: {stats['sent_to_ai']}")
         logger.info(f"Пропущено фильтром: {stats['skipped_by_filter']}")
         logger.info(f"Найдено проблем: {stats['problems']}")
