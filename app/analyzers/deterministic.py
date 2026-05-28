@@ -13,6 +13,25 @@ EMPLOYEE_GREETINGS = (
     "привет", "здравствуй",
 )
 BOT_EMPLOYEES = {"stax система", "stax system"}
+RETURN_REQUEST_MARKERS = (
+    "записаться на сдачу", "запишите на сдачу", "записать на сдачу",
+    "хочу сдать", "буду сдавать", "еду на сдачу", "поеду на сдачу",
+    "сдать авто", "сдать автомобиль", "сдать машину", "сдача авто",
+    "сдача автомобиля", "сдача машины", "вернуть авто", "вернуть автомобиль",
+)
+SCHEDULING_ONLY_MARKERS = (
+    "на какое время", "на какой день", "когда записать", "когда вас записать",
+    "во сколько записать", "во сколько вас записать", "какое время записать",
+    "на когда записать", "сегодня или завтра", "завтра утром", "завтра днем",
+    "завтра днём", "завтра вечером", "во сколько", "когда удобно",
+)
+RETENTION_OR_CLARIFICATION_MARKERS = (
+    "почему", "причин", "что случилось", "что произошло", "что не устроило",
+    "какая проблема", "какие проблемы", "можем помочь", "давайте разбер",
+    "разберемся", "разберёмся", "уточните", "подскажите", "предлож",
+    "альтернатив", "другой автомобиль", "замен", "ремонт", "сервис",
+    "попробуем решить", "решить вопрос", "можно оставить", "не сдавайте",
+)
 
 
 def has_employee_reply(messages: list) -> bool:
@@ -37,9 +56,17 @@ def first_client_message(messages: list) -> str:
     return ""
 
 
+def _first_client_message_obj(messages: list) -> dict | None:
+    for m in messages:
+        if m.get("role") == "client":
+            return m
+    return None
+
+
 def _problem(category: str, description: str, severity: str, priority: str,
-             client_quote: str = "", employee_quote: str = "", confidence: float = 1.0) -> dict:
-    return {
+             client_quote: str = "", employee_quote: str = "",
+             confidence: float = 1.0, message_id: str = "") -> dict:
+    problem = {
         "category": category,
         "description": description,
         "severity": severity,
@@ -48,6 +75,9 @@ def _problem(category: str, description: str, severity: str, priority: str,
         "client_quote": client_quote,
         "priority": priority,
     }
+    if message_id:
+        problem["message_id"] = message_id
+    return problem
 
 
 def _issue(conv: dict, problems: list) -> dict:
@@ -70,6 +100,12 @@ def _norm(text: str) -> str:
     return clean_text(text).lower().replace("ё", "е")
 
 
+def _message_id(message: dict | None) -> str:
+    if not message:
+        return ""
+    return clean_text(message.get("message_id")) or clean_text(message.get("id"))
+
+
 def _has_any(text: str, phrases: tuple[str, ...]) -> bool:
     normalized = _norm(text)
     return any(phrase in normalized for phrase in phrases)
@@ -87,6 +123,16 @@ def _first_employee_reply_after(messages: list, start_index: int) -> dict | None
         if message.get("role") == "employee" and clean_text(message.get("text")):
             return message
     return None
+
+
+def _first_client_return_request(messages: list) -> tuple[int, str] | tuple[None, str]:
+    for index, message in enumerate(messages):
+        if message.get("role") != "client":
+            continue
+        text = clean_text(message.get("text"))
+        if _has_any(text, RETURN_REQUEST_MARKERS):
+            return index, text
+    return None, ""
 
 
 def _is_bot_employee(conv: dict) -> bool:
@@ -107,13 +153,15 @@ def check_no_reply(conv: dict) -> dict | None:
         return None
 
     logger.info(f"[БЕЗ_ОТВЕТА] {conv['conversation_id']}")
-    first_msg = first_client_message(messages)
+    first_client = _first_client_message_obj(messages)
+    first_msg = clean_text(first_client.get("text"))[:160] if first_client else ""
     return _issue(conv, [_problem(
         category="БЕЗ_ОТВЕТА",
         description="Клиент написал, но за период нет ни одного ответа сотрудника.",
         severity="высокая",
         priority="P1",
         client_quote=first_msg,
+        message_id=_message_id(first_client),
     )])
 
 
@@ -149,4 +197,39 @@ def check_no_greeting(conv: dict) -> dict | None:
         priority="P3",
         client_quote=first_client_msg,
         employee_quote=employee_quote,
+        message_id=_message_id(first_employee_reply),
+    )])
+
+
+def check_return_without_retention(conv: dict) -> dict | None:
+    """
+    Проверяет, что диспетчер не записывает водителя на сдачу без попытки удержания.
+    """
+    if _is_bot_employee(conv):
+        return None
+
+    messages = conv.get("messages", [])
+    client_index, client_quote = _first_client_return_request(messages)
+    if client_index is None:
+        return None
+
+    first_employee_reply = _first_employee_reply_after(messages, client_index)
+    if not first_employee_reply:
+        return None
+
+    employee_quote = clean_text(first_employee_reply.get("text"))
+    if not _has_any(employee_quote, SCHEDULING_ONLY_MARKERS):
+        return None
+    if _has_any(employee_quote, RETENTION_OR_CLARIFICATION_MARKERS):
+        return None
+
+    logger.info(f"[СДАЧА_БЕЗ_УДЕРЖАНИЯ] {conv['conversation_id']}")
+    return _issue(conv, [_problem(
+        category="СДАЧА_БЕЗ_УДЕРЖАНИЯ",
+        description="Водитель просит записаться на сдачу, сотрудник уточняет только день/время и не пытается выяснить причину или предложить решение.",
+        severity="средняя",
+        priority="P2",
+        client_quote=client_quote,
+        employee_quote=employee_quote,
+        message_id=_message_id(first_employee_reply),
     )])

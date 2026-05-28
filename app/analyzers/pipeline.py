@@ -6,6 +6,7 @@ import re
 from app.analyzers.deterministic import (
     check_no_greeting,
     check_no_reply,
+    check_return_without_retention,
     has_client_message,
     has_employee_reply,
 )
@@ -234,6 +235,10 @@ def analyze_source(conversations: list, chat_type: str, source: str,
             no_greeting_issue = check_no_greeting(conv)
             if no_greeting_issue:
                 all_issues.append(no_greeting_issue)
+
+            return_without_retention_issue = check_return_without_retention(conv)
+            if return_without_retention_issue:
+                all_issues.append(return_without_retention_issue)
 
             should_send, priority, reason = _ai_filter_decision(conv)
             if should_send:

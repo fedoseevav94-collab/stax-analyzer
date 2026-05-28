@@ -6,7 +6,7 @@ import time
 
 from app.ai.prompts import make_batches, build_analysis_prompt, ANALYSIS_SYSTEM
 from app.ai.providers import call_ai
-from app.analyzers.quote_validator import quote_exists_in_messages
+from app.analyzers.quote_validator import quote_exists_in_messages, quote_message_indexes
 from app.config import CONFIDENCE_THRESHOLD, AI_BATCH_DELAY_SECONDS
 from app.logger import logger
 from app.utils.text import clean_text, normalize_category
@@ -44,6 +44,54 @@ def _extract_json(raw: str) -> dict:
     return json.loads(raw[start:end])
 
 
+def _employee_quote_after_client_quote(employee_quote: str, client_quote: str, messages: list) -> bool:
+    client_indexes = quote_message_indexes(client_quote, messages, role="client")
+    employee_indexes = quote_message_indexes(employee_quote, messages, role="employee")
+    return any(emp_idx > client_idx for client_idx in client_indexes for emp_idx in employee_indexes)
+
+
+def _message_id_for_quote(quote: str, messages: list, role: str = None) -> str:
+    for index in quote_message_indexes(quote, messages, role=role):
+        message = messages[index]
+        message_id = clean_text(message.get("message_id")) or clean_text(message.get("id"))
+        if message_id:
+            return message_id
+    return ""
+
+
+def _employee_quote_shows_conflict(employee_quote: str) -> bool:
+    text = clean_text(employee_quote).lower().replace("ё", "е")
+    helpful_markers = (
+        "можете", "можно", "попробуйте", "по ссылке", "ссылка",
+        "напишите", "пришлите", "скиньте", "уточним", "передам",
+        "свяжемся", "ждем", "ждём", "предлага", "альтернатив",
+    )
+    hard_conflict_markers = (
+        "сами", "ваша вина", "вы винов", "виноваты", "ваши проблемы",
+        "не пишите", "не звоните", "жалуйтесь", "как хотите",
+        "это ваши", "надо было", "мы не виноваты",
+    )
+    if any(marker in text for marker in hard_conflict_markers):
+        return True
+
+    if any(marker in text for marker in helpful_markers):
+        return False
+
+    refusal_markers = (
+        "не можем", "не сможем", "не будем", "не обязаны", "не входит",
+        "отказ", "отказыва", "невозможно", "не получится", "ничем не",
+        "закрываем", "закрыт", "больше не",
+    )
+    if any(marker in text for marker in refusal_markers):
+        return True
+
+    # Вопросы и уточнения сами по себе не доказывают конфликт.
+    if "?" in text:
+        return False
+
+    return False
+
+
 def _validate_problem(problem: dict, conv: dict) -> dict | None:
     """
     Финальная валидация AI-проблемы:
@@ -78,6 +126,12 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
     if category == "КОНФЛИКТ" and not client_quote:
         logger.info(f"[SKIP NO_CLIENT_Q] {conv['conversation_id']} КОНФЛИКТ: нет цитаты клиента")
         return None
+    if category == "КОНФЛИКТ" and not _employee_quote_after_client_quote(emp_quote, client_quote, messages):
+        logger.info(f"[SKIP BAD_ORDER] {conv['conversation_id']} КОНФЛИКТ: ответ сотрудника не после жалобы клиента")
+        return None
+    if category == "КОНФЛИКТ" and not _employee_quote_shows_conflict(emp_quote):
+        logger.info(f"[SKIP NEUTRAL_REPLY] {conv['conversation_id']} КОНФЛИКТ: цитата сотрудника не доказывает конфликт")
+        return None
 
     reasoning = clean_text(problem.get("reasoning")) or "—"
     if category == "НЕКОМПЕТЕНТНОСТЬ":
@@ -97,8 +151,11 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
     if client_quote:
         description += f" Реакция на: «{client_quote}»"
     severity = clean_text(problem.get("severity")) or "средняя"
+    message_id = _message_id_for_quote(emp_quote, messages, role="employee")
+    if not message_id and client_quote:
+        message_id = _message_id_for_quote(client_quote, messages, role="client")
 
-    return {
+    validated = {
         "category": category,
         "description": description,
         "severity": severity,
@@ -107,6 +164,9 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
         "client_quote": client_quote,
         "priority": calculate_priority(category, severity, client_quote, description),
     }
+    if message_id:
+        validated["message_id"] = message_id
+    return validated
 
 
 def _empty_stats(candidates_count: int) -> dict:
