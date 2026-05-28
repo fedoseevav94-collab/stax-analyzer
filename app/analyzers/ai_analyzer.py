@@ -21,21 +21,12 @@ ALLOWED_AI_CATEGORIES = {
 def calculate_priority(category: str, severity: str, client_quote: str = "", description: str = "") -> str:
     category = normalize_category(category)
     sev = (severity or "").strip().lower()
-    risk_text = f"{client_quote} {description}".lower().replace("ё", "е")
-    churn_or_blame = any(
-        phrase in risk_text
-        for phrase in (
-            "уйду", "уходим", "расторг", "конкурент", "верните деньги",
-            "обман", "жаловаться", "жалоб", "в суд", "претензи",
-            "обвиня", "виноват", "ужас", "кошмар",
-        )
-    )
 
+    if sev == "низкая":
+        return "P3"
     if category in {"БЕЗ_ОТВЕТА", "ГРУБОСТЬ"}:
         return "P1"
-    if category == "КОНФЛИКТ" and (sev == "высокая" or churn_or_blame):
-        return "P1"
-    if churn_or_blame:
+    if category == "КОНФЛИКТ" and sev == "высокая":
         return "P1"
     if category == "НЕКОМПЕТЕНТНОСТЬ":
         return "P2"
@@ -89,6 +80,19 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
         return None
 
     reasoning = clean_text(problem.get("reasoning")) or "—"
+    if category == "НЕКОМПЕТЕНТНОСТЬ":
+        if not client_quote:
+            logger.info(f"[SKIP NO_CLIENT_Q] {conv['conversation_id']} НЕКОМПЕТЕНТНОСТЬ: нет опорной цитаты")
+            return None
+        reasoning_norm = reasoning.lower().replace("ё", "е")
+        contradiction_markers = (
+            "противореч", "опровер", "ложн", "неверн", "расхожд",
+            "сначала", "потом", "другая информация", "в диалоге указано",
+        )
+        if not any(marker in reasoning_norm for marker in contradiction_markers):
+            logger.info(f"[SKIP WEAK_REASON] {conv['conversation_id']} НЕКОМПЕТЕНТНОСТЬ: нет явного противоречия")
+            return None
+
     description = f"{reasoning} Цитата сотрудника: «{emp_quote}»"
     if client_quote:
         description += f" Реакция на: «{client_quote}»"
@@ -167,6 +171,9 @@ def analyze_with_ai(candidates: list) -> tuple[list, dict]:
                         "dialog_link": base["dialog_link"],
                         "first_client_msg": base["first_client_msg"],
                         "topic": base.get("topic", "Другое"),
+                        "source": base.get("source", ""),
+                        "chat_id": base.get("chat_id", ""),
+                        "channel_id": base.get("channel_id", ""),
                         "problems": validated,
                     })
 

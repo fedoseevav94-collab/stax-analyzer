@@ -59,6 +59,9 @@ def _issue(conv: dict, problems: list) -> dict:
         "dialog_link": conv["dialog_link"],
         "first_client_msg": first_client_message(conv.get("messages", [])),
         "topic": conv.get("topic", "Другое"),
+        "source": conv.get("source", ""),
+        "chat_id": conv.get("chat_id", ""),
+        "channel_id": conv.get("channel_id", ""),
         "problems": problems,
     }
 

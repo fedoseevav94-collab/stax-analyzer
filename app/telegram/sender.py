@@ -31,6 +31,12 @@ def send_telegram(text: str) -> None:
         time.sleep(1)
 
 
+def send_telegram_messages(messages: list[str]) -> None:
+    for message in messages:
+        if message:
+            send_telegram(message)
+
+
 def _severity_key(severity: str) -> str:
     severity = (severity or "средняя").strip().lower()
     if severity in {"высокая", "средняя", "низкая"}:
@@ -49,17 +55,76 @@ def _source_name(chat_type: str) -> str:
     return chat_type or "Неизвестный источник"
 
 
+def _source_label(chat_type: str) -> str:
+    source = _source_name(chat_type)
+    lower = source.lower()
+    if lower.startswith("wazzup"):
+        emoji = "📲"
+    elif source == "Диспетчеры":
+        emoji = "💬"
+    elif source == "Менеджеры подписок":
+        emoji = "👥"
+    elif source == "Клиентское приложение":
+        emoji = "📱"
+    else:
+        emoji = "▫️"
+    return f"{emoji} {source}"
+
+
 def _topic_name(issue: dict) -> str:
     return clean_text(issue.get("topic")) or "Другое"
 
 
-def _quote(text: str, limit: int = 220) -> str:
+def _shorten(text: str, limit: int) -> str:
     text = clean_text(text)
-    if not text:
-        return ""
     if len(text) > limit:
         text = text[:limit - 1].rstrip() + "…"
+    return text
+
+
+def _quote(text: str, limit: int = 220) -> str:
+    text = _shorten(text, limit)
+    if not text:
+        return ""
     return f"«{text}»"
+
+
+def _risk_text(problem: dict) -> str:
+    text = clean_text(problem.get("reasoning")) or clean_text(problem.get("description"))
+    for marker in ("Цитата сотрудника:", "Реакция на:"):
+        pos = text.find(marker)
+        if pos >= 0:
+            text = text[:pos]
+    fallback_by_category = {
+        "КОНФЛИКТ": "В диалоге есть конфликтная ситуация, требующая проверки.",
+        "ГРУБОСТЬ": "Возможная грубость сотрудника, требуется проверка.",
+        "НЕКОМПЕТЕНТНОСТЬ": "Возможная противоречивая информация, требуется проверка.",
+        "БЕЗ_ОТВЕТА": "Клиент написал, но ответа сотрудника нет.",
+        "БЕЗ_ПРИВЕТСТВИЯ": "Клиент начал диалог с приветствия, первый ответ сотрудника был без приветствия.",
+    }
+    fallback = fallback_by_category.get(normalize_category(problem.get("category")), "Проблема требует проверки руководителем.")
+    return _shorten(text.strip(" .;—-") or fallback, 180)
+
+
+def _search_quote(problem: dict) -> str:
+    text = clean_text(problem.get("employee_quote")) or clean_text(problem.get("client_quote"))
+    return _quote(text, 80)
+
+
+def build_message_link(issue: dict, problem: dict) -> str:
+    message_id = clean_text(problem.get("message_id")) or clean_text(issue.get("message_id"))
+    fallback = clean_text(issue.get("dialog_link"))
+    if not message_id:
+        return fallback
+
+    source = clean_text(issue.get("source")).lower()
+    conversation_id = clean_text(issue.get("conversation_id"))
+    chat_id = clean_text(issue.get("chat_id"))
+    if source == "telegram" and chat_id and conversation_id:
+        return f"https://web.stax.ru/react/telegram/chat/{chat_id}/{conversation_id}/{message_id}"
+    if source == "client_app" and conversation_id:
+        return f"https://web.stax.ru/react/client/chat/{conversation_id}/{message_id}"
+    return fallback
 
 
 def _priority(problem: dict) -> str:
@@ -89,6 +154,63 @@ def _flatten_issues(issues: list) -> list:
                 "priority": _priority(problem),
             })
     return rows
+
+
+def _priority_sort_key(row: dict) -> tuple:
+    priority_order = {"P1": 0, "P2": 1, "P3": 2}
+    severity_order = {"высокая": 0, "средняя": 1, "низкая": 2}
+    return (
+        priority_order.get(row["priority"], 3),
+        severity_order.get(row["severity"], 3),
+        row["category"],
+    )
+
+
+def _select_detail_rows(rows: list) -> list:
+    p1_rows = [
+        r for r in rows
+        if r["severity"] != "низкая" and (r["priority"] == "P1" or r["severity"] == "высокая")
+    ]
+    p2_rows = [r for r in rows if r not in p1_rows and r["priority"] == "P2" and r["severity"] != "низкая"]
+    return sorted((p1_rows + p2_rows[:3])[:5], key=_priority_sort_key)
+
+
+def _format_problem_card(row: dict, idx: int, compact: bool = False) -> list[str]:
+    issue = row["issue"]
+    problem = row["problem"]
+    emp = clean_text(issue.get("employee")) or "Без ответа"
+    chat = _source_label(issue.get("chat_type"))
+    conv_id = clean_text(issue.get("conversation_id"))
+    link = build_message_link(issue, problem)
+    first_msg = clean_text(issue.get("first_client_msg"))
+    topic = _topic_name(issue)
+    client_quote = clean_text(problem.get("client_quote")) or first_msg
+    employee_quote = clean_text(problem.get("employee_quote"))
+    search_quote = _search_quote(problem)
+    risk = _risk_text(problem)
+
+    header = f"{idx}. {_severity_emoji(row['severity'])} {row['category']} — {chat}"
+    if emp and emp != "Без ответа":
+        header += f" — {emp}"
+
+    lines = ["", header, f"⚠️ Риск: {risk}"]
+    if compact:
+        if search_quote:
+            lines.append(f"🔎 Искать: {search_quote}")
+    else:
+        if client_quote:
+            lines.append(f"🙋 Клиент: {_quote(client_quote, 220)}")
+        if employee_quote:
+            lines.append(f"👤 Сотрудник: {_quote(employee_quote, 220)}")
+        if search_quote:
+            lines.append(f"🔎 Искать: {search_quote}")
+    if topic and topic != "Другое":
+        lines.append(f"🏷️ Тема: {topic}")
+    if conv_id:
+        lines.append(f"🆔 ID: {conv_id}")
+    if link:
+        lines.append(f"🔗 Диалог: {link}")
+    return lines
 
 
 def _analysis_status_text(run_status: str, analysis_stats: dict | None) -> str:
@@ -181,62 +303,25 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
         for source, count in source_counts.most_common():
             lines.append(f"{source} — {count}")
 
-        p1_rows = [
-            r for r in rows
-            if r["severity"] != "низкая" and (r["priority"] == "P1" or r["severity"] == "высокая")
-        ]
-        p2_rows = [r for r in rows if r not in p1_rows and r["priority"] == "P2" and r["severity"] != "низкая"]
-        detail_rows = p1_rows + p2_rows[:5]
+        detail_rows = _select_detail_rows(rows)
 
         lines += ["", "🔥 Проверить в первую очередь"]
         if not detail_rows:
             lines.append("Нет новых P1/P2 диалогов. Низкие проблемы учтены только в статистике.")
         else:
-            priority_order = {"P1": 0, "P2": 1, "P3": 2}
-            detail_rows = sorted(
-                detail_rows,
-                key=lambda r: (priority_order.get(r["priority"], 3), {"высокая": 0, "средняя": 1, "низкая": 2}[r["severity"]]),
-            )
             for idx, row in enumerate(detail_rows, start=1):
-                issue = row["issue"]
-                problem = row["problem"]
-                emp = clean_text(issue.get("employee")) or "Без ответа"
-                chat = clean_text(issue.get("chat_type"))
-                conv_id = clean_text(issue.get("conversation_id"))
-                link = clean_text(issue.get("dialog_link"))
-                first_msg = clean_text(issue.get("first_client_msg"))
-                topic = _topic_name(issue)
-                client_quote = clean_text(problem.get("client_quote")) or first_msg
-                employee_quote = clean_text(problem.get("employee_quote"))
-                description = clean_text(problem.get("reasoning")) or clean_text(problem.get("description"))
-                header = f"{idx}. {_severity_emoji(row['severity'])} {row['category']} — {chat}"
-                if emp and emp != "Без ответа":
-                    header += f" — {emp}"
-                lines.append("")
-                lines.append(header)
-                if description:
-                    lines.append(f"Суть: {description}")
-                if topic and topic != "Другое":
-                    lines.append(f"Тема: {topic}")
-                if client_quote:
-                    lines.append(f"Клиент: {_quote(client_quote)}")
-                if employee_quote:
-                    lines.append(f"Сотрудник: {_quote(employee_quote)}")
-                if conv_id:
-                    lines.append(f"ID: {conv_id}")
-                if link:
-                    lines.append(f"Диалог: {link}")
+                lines.extend(_format_problem_card(row, idx))
 
         if len(detail_rows) < total_new:
             lines.append("")
-            lines.append("Показаны только самые важные диалоги. Остальные учтены в статистике.")
+            lines.append("Показаны только самые важные диалоги. Остальные придут отдельным сообщением.")
 
         lines += [
             "",
             "🧭 Что сделать",
             "1. Проверить критичные диалоги.",
             "2. Разобрать повторяющиеся проблемы с отделом.",
-            "3. Не использовать БЕЗ_ПРИВЕТСТВИЯ как KPI до появления времени сообщений.",
+            "3. БЕЗ_ПРИВЕТСТВИЯ учитывать только как низкий сервисный сигнал.",
         ]
 
         body = "\n".join(lines)
@@ -249,3 +334,19 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
 
     body += "\nАнализ выполнен автоматически."
     return body
+
+
+def format_additional_report(fresh_issues: list) -> str:
+    rows = sorted(_flatten_issues(fresh_issues), key=_priority_sort_key)
+    detail_rows = _select_detail_rows(rows)
+    hidden_rows = [row for row in rows if row not in detail_rows]
+    if not hidden_rows:
+        return ""
+
+    lines = [
+        "📋 Остальные проблемы",
+        "Компактный список проблем, которые не попали в главный блок.",
+    ]
+    for idx, row in enumerate(hidden_rows, start=1):
+        lines.extend(_format_problem_card(row, idx, compact=True))
+    return "\n".join(lines)
