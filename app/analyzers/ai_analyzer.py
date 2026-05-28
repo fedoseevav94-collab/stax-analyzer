@@ -6,7 +6,7 @@ import time
 
 from app.ai.prompts import make_batches, build_analysis_prompt, ANALYSIS_SYSTEM
 from app.ai.providers import call_ai
-from app.analyzers.quote_validator import quote_exists_in_messages
+from app.analyzers.quote_validator import quote_exists_in_messages, quote_message_indexes
 from app.config import CONFIDENCE_THRESHOLD, AI_BATCH_DELAY_SECONDS
 from app.logger import logger
 from app.utils.text import clean_text, normalize_category
@@ -44,6 +44,12 @@ def _extract_json(raw: str) -> dict:
     return json.loads(raw[start:end])
 
 
+def _employee_quote_after_client_quote(employee_quote: str, client_quote: str, messages: list) -> bool:
+    client_indexes = quote_message_indexes(client_quote, messages, role="client")
+    employee_indexes = quote_message_indexes(employee_quote, messages, role="employee")
+    return any(emp_idx > client_idx for client_idx in client_indexes for emp_idx in employee_indexes)
+
+
 def _validate_problem(problem: dict, conv: dict) -> dict | None:
     """
     Финальная валидация AI-проблемы:
@@ -77,6 +83,9 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
         return None
     if category == "КОНФЛИКТ" and not client_quote:
         logger.info(f"[SKIP NO_CLIENT_Q] {conv['conversation_id']} КОНФЛИКТ: нет цитаты клиента")
+        return None
+    if category == "КОНФЛИКТ" and not _employee_quote_after_client_quote(emp_quote, client_quote, messages):
+        logger.info(f"[SKIP BAD_ORDER] {conv['conversation_id']} КОНФЛИКТ: ответ сотрудника не после жалобы клиента")
         return None
 
     reasoning = clean_text(problem.get("reasoning")) or "—"
