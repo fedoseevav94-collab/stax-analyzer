@@ -89,7 +89,36 @@ def _risk_text(problem: dict) -> str:
         pos = text.find(marker)
         if pos >= 0:
             text = text[:pos]
-    return _shorten(text.strip(" .;—-") or "Проблема требует проверки руководителем.", 180)
+    fallback_by_category = {
+        "КОНФЛИКТ": "В диалоге есть конфликтная ситуация, требующая проверки.",
+        "ГРУБОСТЬ": "Возможная грубость сотрудника, требуется проверка.",
+        "НЕКОМПЕТЕНТНОСТЬ": "Возможная противоречивая информация, требуется проверка.",
+        "БЕЗ_ОТВЕТА": "Клиент написал, но ответа сотрудника нет.",
+        "БЕЗ_ПРИВЕТСТВИЯ": "Клиент начал диалог с приветствия, первый ответ сотрудника был без приветствия.",
+    }
+    fallback = fallback_by_category.get(normalize_category(problem.get("category")), "Проблема требует проверки руководителем.")
+    return _shorten(text.strip(" .;—-") or fallback, 180)
+
+
+def _search_quote(problem: dict) -> str:
+    text = clean_text(problem.get("employee_quote")) or clean_text(problem.get("client_quote"))
+    return _quote(text, 80)
+
+
+def build_message_link(issue: dict, problem: dict) -> str:
+    message_id = clean_text(problem.get("message_id")) or clean_text(issue.get("message_id"))
+    fallback = clean_text(issue.get("dialog_link"))
+    if not message_id:
+        return fallback
+
+    source = clean_text(issue.get("source")).lower()
+    conversation_id = clean_text(issue.get("conversation_id"))
+    chat_id = clean_text(issue.get("chat_id"))
+    if source == "telegram" and chat_id and conversation_id:
+        return f"https://web.stax.ru/react/telegram/chat/{chat_id}/{conversation_id}/{message_id}"
+    if source == "client_app" and conversation_id:
+        return f"https://web.stax.ru/react/client/chat/{conversation_id}/{message_id}"
+    return fallback
 
 
 def _priority(problem: dict) -> str:
@@ -233,11 +262,12 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
                 emp = clean_text(issue.get("employee")) or "Без ответа"
                 chat = _source_label(issue.get("chat_type"))
                 conv_id = clean_text(issue.get("conversation_id"))
-                link = clean_text(issue.get("dialog_link"))
+                link = build_message_link(issue, problem)
                 first_msg = clean_text(issue.get("first_client_msg"))
                 topic = _topic_name(issue)
                 client_quote = clean_text(problem.get("client_quote")) or first_msg
                 employee_quote = clean_text(problem.get("employee_quote"))
+                search_quote = _search_quote(problem)
                 risk = _risk_text(problem)
                 header = f"{idx}. {_severity_emoji(row['severity'])} {row['category']} — {chat}"
                 if emp and emp != "Без ответа":
@@ -249,6 +279,8 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
                     lines.append(f"🙋 Клиент: {_quote(client_quote, 220)}")
                 if employee_quote:
                     lines.append(f"👤 Сотрудник: {_quote(employee_quote, 220)}")
+                if search_quote:
+                    lines.append(f"🔎 Искать: {search_quote}")
                 if topic and topic != "Другое":
                     lines.append(f"🏷️ Тема: {topic}")
                 if conv_id:
@@ -265,7 +297,7 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
             "🧭 Что сделать",
             "1. Проверить критичные диалоги.",
             "2. Разобрать повторяющиеся проблемы с отделом.",
-            "3. Не использовать БЕЗ_ПРИВЕТСТВИЯ как KPI до появления времени сообщений.",
+            "3. БЕЗ_ПРИВЕТСТВИЯ учитывать только как низкий сервисный сигнал.",
         ]
 
         body = "\n".join(lines)
