@@ -50,6 +50,39 @@ def _employee_quote_after_client_quote(employee_quote: str, client_quote: str, m
     return any(emp_idx > client_idx for client_idx in client_indexes for emp_idx in employee_indexes)
 
 
+def _employee_quote_shows_conflict(employee_quote: str) -> bool:
+    text = clean_text(employee_quote).lower().replace("ё", "е")
+    helpful_markers = (
+        "можете", "можно", "попробуйте", "по ссылке", "ссылка",
+        "напишите", "пришлите", "скиньте", "уточним", "передам",
+        "свяжемся", "ждем", "ждём", "предлага", "альтернатив",
+    )
+    hard_conflict_markers = (
+        "сами", "ваша вина", "вы винов", "виноваты", "ваши проблемы",
+        "не пишите", "не звоните", "жалуйтесь", "как хотите",
+        "это ваши", "надо было", "мы не виноваты",
+    )
+    if any(marker in text for marker in hard_conflict_markers):
+        return True
+
+    if any(marker in text for marker in helpful_markers):
+        return False
+
+    refusal_markers = (
+        "не можем", "не сможем", "не будем", "не обязаны", "не входит",
+        "отказ", "отказыва", "невозможно", "не получится", "ничем не",
+        "закрываем", "закрыт", "больше не",
+    )
+    if any(marker in text for marker in refusal_markers):
+        return True
+
+    # Вопросы и уточнения сами по себе не доказывают конфликт.
+    if "?" in text:
+        return False
+
+    return False
+
+
 def _validate_problem(problem: dict, conv: dict) -> dict | None:
     """
     Финальная валидация AI-проблемы:
@@ -86,6 +119,9 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
         return None
     if category == "КОНФЛИКТ" and not _employee_quote_after_client_quote(emp_quote, client_quote, messages):
         logger.info(f"[SKIP BAD_ORDER] {conv['conversation_id']} КОНФЛИКТ: ответ сотрудника не после жалобы клиента")
+        return None
+    if category == "КОНФЛИКТ" and not _employee_quote_shows_conflict(emp_quote):
+        logger.info(f"[SKIP NEUTRAL_REPLY] {conv['conversation_id']} КОНФЛИКТ: цитата сотрудника не доказывает конфликт")
         return None
 
     reasoning = clean_text(problem.get("reasoning")) or "—"
