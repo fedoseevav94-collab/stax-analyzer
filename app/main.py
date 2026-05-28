@@ -78,6 +78,26 @@ def run() -> None:
 
     all_issues: list = []
     employee_totals: dict = {}
+    analysis_totals = {
+        "loaded": 0,
+        "sent_to_ai": 0,
+        "skipped_by_filter": 0,
+        "ai_candidates": 0,
+        "ai_processed": 0,
+        "ai_skipped_low_priority": 0,
+        "ai_errors": 0,
+        "ai_rate_limited": False,
+    }
+
+    def merge_analysis_stats(stats: dict) -> None:
+        for key in (
+            "loaded", "sent_to_ai", "skipped_by_filter", "ai_candidates",
+            "ai_processed", "ai_skipped_low_priority", "ai_errors",
+        ):
+            analysis_totals[key] += int(stats.get(key) or 0)
+        analysis_totals["ai_rate_limited"] = (
+            analysis_totals["ai_rate_limited"] or bool(stats.get("ai_rate_limited"))
+        )
 
     def add_stats(chat_type: str, dialogs_count: int, issues: list) -> None:
         per_emp: dict = {}
@@ -99,8 +119,9 @@ def run() -> None:
         convs = fetch_conversations(cfg["url"], period["fetch_start_ts"], period["fetch_end_ts"])
         logger.info(f"Диалогов выгружено: {len(convs)}")
         if convs:
-            issues, dc = analyze_source(convs, chat_type=chat_type, source="telegram",
-                                        chat_id=cfg["chat_id"])
+            issues, dc, source_stats = analyze_source(convs, chat_type=chat_type, source="telegram",
+                                                      chat_id=cfg["chat_id"])
+            merge_analysis_stats(source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
             all_issues.extend(issues)
             add_stats(chat_type, dc, issues)
@@ -111,7 +132,8 @@ def run() -> None:
     convs = fetch_conversations(CLIENT_APP_URL, period["fetch_start_ts"], period["fetch_end_ts"])
     logger.info(f"Диалогов выгружено: {len(convs)}")
     if convs:
-        issues, dc = analyze_source(convs, chat_type="Клиентское приложение", source="client_app")
+        issues, dc, source_stats = analyze_source(convs, chat_type="Клиентское приложение", source="client_app")
+        merge_analysis_stats(source_stats)
         logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
         all_issues.extend(issues)
         add_stats("Клиентское приложение", dc, issues)
@@ -135,8 +157,9 @@ def run() -> None:
         )
         logger.info(f"Диалогов выгружено: {len(convs)}")
         if convs:
-            issues, dc = analyze_source(convs, chat_type=f"Wazzup: {channel_title}",
-                                        source="wazzup", channel_id=channel_id)
+            issues, dc, source_stats = analyze_source(convs, chat_type=f"Wazzup: {channel_title}",
+                                                      source="wazzup", channel_id=channel_id)
+            merge_analysis_stats(source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
             all_issues.extend(issues)
             add_stats(f"Wazzup: {channel_title}", dc, issues)
@@ -159,7 +182,10 @@ def run() -> None:
 
     stats = ai_stats()
     logger.info(f"AI стат: всего {stats['calls']}, упало {stats['failures']}")
-    if stats["calls"] > 0 and (stats["failures"] / stats["calls"]) > AI_FAILURE_THRESHOLD:
+    ai_incomplete = analysis_totals["ai_processed"] < analysis_totals["ai_candidates"]
+    if (
+        stats["calls"] > 0 and (stats["failures"] / stats["calls"]) > AI_FAILURE_THRESHOLD
+    ) or ai_incomplete:
         run_status = "partial"
     else:
         run_status = "ok"
@@ -171,7 +197,7 @@ def run() -> None:
 
     # ── Отчёт ─────────────────────────────────────────────────────────────────
     logger.info("=" * 60)
-    report = format_report(fresh_issues, total_count, period, run_status, weekly_top)
+    report = format_report(fresh_issues, total_count, period, run_status, weekly_top, analysis_totals)
     logger.info(report)
     send_telegram(report)
     logger.info("Готово ✓")

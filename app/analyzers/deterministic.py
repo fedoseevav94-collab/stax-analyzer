@@ -50,6 +50,7 @@ def check_no_reply(conv: dict) -> dict | None:
         "chat_type": conv["chat_type"],
         "dialog_link": conv["dialog_link"],
         "first_client_msg": first_msg,
+        "topic": conv.get("topic", "Другое"),
         "problems": [{
             "category": "БЕЗ_ОТВЕТА",
             "description": "Клиент написал, но за период нет ни одного ответа сотрудника.",
@@ -57,5 +58,6 @@ def check_no_reply(conv: dict) -> dict | None:
             "confidence": 1.0,
             "employee_quote": "",
             "client_quote": first_msg,
+            "priority": "P1",
         }],
     }
