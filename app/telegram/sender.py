@@ -68,11 +68,11 @@ def _priority(problem: dict) -> str:
         return priority
     category = normalize_category(problem.get("category"))
     severity = _severity_key(problem.get("severity"))
-    if category in {"БЕЗ_ОТВЕТА", "ГРУБОСТЬ"}:
+    if category in {"БЕЗ_ОТВЕТА", "БЕЗ_ОТВЕТА_60М", "ГРУБОСТЬ", "КРИТИЧЕСКИ_ДОЛГИЙ_ОТВЕТ"}:
         return "P1"
     if category == "КОНФЛИКТ" and severity == "высокая":
         return "P1"
-    if category in {"КОНФЛИКТ", "НЕКОМПЕТЕНТНОСТЬ"} and severity in {"высокая", "средняя"}:
+    if category in {"КОНФЛИКТ", "НЕКОМПЕТЕНТНОСТЬ", "ДОЛГИЙ_ОТВЕТ"} and severity in {"высокая", "средняя"}:
         return "P2"
     return "P3"
 

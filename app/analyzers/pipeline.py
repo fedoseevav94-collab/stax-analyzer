@@ -3,7 +3,12 @@
 """
 import re
 
-from app.analyzers.deterministic import check_no_reply, has_client_message, has_employee_reply
+from app.analyzers.deterministic import (
+    check_no_reply,
+    check_response_time,
+    has_client_message,
+    has_employee_reply,
+)
 from app.analyzers.ai_analyzer import analyze_with_ai
 from app.config import WAZZUP_FRONTEND_BASE_URL, CLIENT_APP_FRONTEND_BASE_URL
 from app.logger import logger
@@ -165,8 +170,23 @@ def should_send_to_ai(conv: dict) -> tuple[bool, str, str]:
     return False, "P3", "нет признаков риска"
 
 
+def _merge_issues_by_conversation(issues: list) -> list:
+    merged: dict = {}
+    for issue in issues:
+        cid = issue.get("conversation_id")
+        if not cid:
+            continue
+        if cid not in merged:
+            merged[cid] = dict(issue)
+            merged[cid]["problems"] = list(issue.get("problems", []))
+        else:
+            merged[cid]["problems"].extend(issue.get("problems", []))
+    return list(merged.values())
+
+
 def analyze_source(conversations: list, chat_type: str, source: str,
-                   chat_id: str = "", channel_id: str = "") -> tuple[list, int, dict]:
+                   chat_id: str = "", channel_id: str = "",
+                   analysis_end_ts: int | None = None) -> tuple[list, int, dict]:
     """
     Возвращает (issues, total_dialogs_count, analysis_stats).
     """
@@ -200,10 +220,14 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         emp = (conv.get("employee") or "").strip().lower()
         is_bot = emp in BOT_EMPLOYEES
 
-        no_reply_issue = check_no_reply(conv)
+        no_reply_issue = check_no_reply(conv, analysis_end_ts=analysis_end_ts)
         if no_reply_issue:
             all_issues.append(no_reply_issue)
         elif has_employee_reply(conv["messages"]) and not is_bot:
+            slow_reply_issue = check_response_time(conv)
+            if slow_reply_issue:
+                all_issues.append(slow_reply_issue)
+
             should_send, priority, reason = should_send_to_ai(conv)
             if should_send:
                 conv["ai_candidate_priority"] = priority
@@ -217,6 +241,7 @@ def analyze_source(conversations: list, chat_type: str, source: str,
 
     ai_issues, ai_stats = analyze_with_ai(ai_candidates)
     all_issues.extend(ai_issues)
+    all_issues = _merge_issues_by_conversation(all_issues)
 
     stats = {
         "source_name": chat_type,

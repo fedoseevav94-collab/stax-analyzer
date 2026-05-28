@@ -120,7 +120,8 @@ def run() -> None:
         logger.info(f"Диалогов выгружено: {len(convs)}")
         if convs:
             issues, dc, source_stats = analyze_source(convs, chat_type=chat_type, source="telegram",
-                                                      chat_id=cfg["chat_id"])
+                                                      chat_id=cfg["chat_id"],
+                                                      analysis_end_ts=period["report_end_ts"])
             merge_analysis_stats(source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
             all_issues.extend(issues)
@@ -132,7 +133,12 @@ def run() -> None:
     convs = fetch_conversations(CLIENT_APP_URL, period["fetch_start_ts"], period["fetch_end_ts"])
     logger.info(f"Диалогов выгружено: {len(convs)}")
     if convs:
-        issues, dc, source_stats = analyze_source(convs, chat_type="Клиентское приложение", source="client_app")
+        issues, dc, source_stats = analyze_source(
+            convs,
+            chat_type="Клиентское приложение",
+            source="client_app",
+            analysis_end_ts=period["report_end_ts"],
+        )
         merge_analysis_stats(source_stats)
         logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
         all_issues.extend(issues)
@@ -158,7 +164,8 @@ def run() -> None:
         logger.info(f"Диалогов выгружено: {len(convs)}")
         if convs:
             issues, dc, source_stats = analyze_source(convs, chat_type=f"Wazzup: {channel_title}",
-                                                      source="wazzup", channel_id=channel_id)
+                                                      source="wazzup", channel_id=channel_id,
+                                                      analysis_end_ts=period["report_end_ts"])
             merge_analysis_stats(source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
             all_issues.extend(issues)
