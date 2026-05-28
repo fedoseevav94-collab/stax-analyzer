@@ -12,8 +12,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 # ── AI провайдеры ─────────────────────────────────────────────────────────────
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "").strip() or "llama-3.3-70b-versatile"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-2.5-flash"
 
 # ── База данных ───────────────────────────────────────────────────────────────
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
@@ -23,9 +23,9 @@ WAZZUP_FRONTEND_BASE_URL = os.environ.get("WAZZUP_FRONTEND_BASE_URL", "").strip(
 CLIENT_APP_FRONTEND_BASE_URL = os.environ.get("CLIENT_APP_FRONTEND_BASE_URL", "").strip().rstrip("/")
 
 # ── Параметры анализа ─────────────────────────────────────────────────────────
-CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.9"))
-DEDUP_WINDOW_DAYS = int(os.environ.get("DEDUP_WINDOW_DAYS", "14"))
-AI_BATCH_DELAY_SECONDS = int(os.environ.get("AI_BATCH_DELAY_SECONDS", "20"))
+CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", "").strip() or "0.9")
+DEDUP_WINDOW_DAYS = int(os.environ.get("DEDUP_WINDOW_DAYS", "").strip() or "14")
+AI_BATCH_DELAY_SECONDS = int(os.environ.get("AI_BATCH_DELAY_SECONDS", "").strip() or "20")
 
 # ── API endpoints ─────────────────────────────────────────────────────────────
 TG_ENDPOINTS = {
