@@ -1,13 +1,9 @@
-"""
-Промпты для AI-анализа.
-"""
-import json
+# Текущий AI-промпт STAX Analyzer
 
-from app.ai.truncation import smart_truncate
-from app.config import MAX_BATCH_DIALOGS, MAX_BATCH_CHARS
-from app.utils.text import clean_text
+## System Prompt
 
-ANALYSIS_SYSTEM = """Ты — QA-аналитик STAX. Анализируй пачку диалогов и ставь проблемы только при очевидном доказательстве цитатами.
+```text
+Ты — QA-аналитик STAX. Анализируй пачку диалогов и ставь проблемы только при очевидном доказательстве цитатами.
 
 AI проверяет только 3 категории:
 - ГРУБОСТЬ: сотрудник оскорбляет, унижает, угрожает или явно агрессивно издевается над клиентом.
@@ -39,66 +35,44 @@ AI проверяет только 3 категории:
 
 Нужны точные цитаты из диалога. Если нет точной цитаты сотрудника — проблемы нет. Для КОНФЛИКТ нужна цитата клиента.
 Если сомневаешься или confidence ниже 0.8 — верни {"issues":[]}.
-Отвечай только валидным JSON без markdown."""
+Отвечай только валидным JSON без markdown.
+```
 
+## User Prompt Template
 
-def _dialog_to_text(conv: dict) -> str:
-    lines = []
-    for m in conv["messages"]:
-        role = "Сотрудник" if m.get("role") == "employee" else "Клиент"
-        text = clean_text(m.get("text"))
-        if text:
-            msg_date = clean_text(m.get("created_date")) or clean_text(m.get("date")) or clean_text(m.get("timestamp"))
-            prefix = f"[{role}"
-            if msg_date:
-                prefix += f" date={msg_date}"
-            prefix += "]"
-            lines.append(f"{prefix}: {text}")
-    raw = "\n".join(lines)
-    return smart_truncate(raw)
-
-
-def conversation_to_prompt_item(conv: dict) -> str:
-    return f"ID: {conv['conversation_id']}\n{_dialog_to_text(conv)}"
-
-
-def make_batches(conversations: list) -> list:
-    batches, current, current_chars = [], [], 0
-    for conv in conversations:
-        item_len = len(conversation_to_prompt_item(conv))
-        if current and (len(current) >= MAX_BATCH_DIALOGS or current_chars + item_len > MAX_BATCH_CHARS):
-            batches.append(current)
-            current, current_chars = [], 0
-        current.append(conv)
-        current_chars += item_len
-    if current:
-        batches.append(current)
-    return batches
-
-
-def build_analysis_prompt(batch: list) -> str:
-    dialogs = "\n\n--- ДИАЛОГ ---\n\n".join(conversation_to_prompt_item(c) for c in batch)
-    return f"""Найди только очевидные проблемы сотрудника в категориях ГРУБОСТЬ, НЕКОМПЕТЕНТНОСТЬ, КОНФЛИКТ.
+```text
+Найди только очевидные проблемы сотрудника в категориях ГРУБОСТЬ, НЕКОМПЕТЕНТНОСТЬ, КОНФЛИКТ.
 Верни JSON:
-{{
+{
   "issues": [
-    {{
+    {
       "conversation_id": "ID",
       "problems": [
-        {{
+        {
           "category": "ГРУБОСТЬ | НЕКОМПЕТЕНТНОСТЬ | КОНФЛИКТ",
           "employee_quote": "точная цитата сотрудника",
           "client_quote": "точная цитата клиента или пустая строка",
           "reasoning": "коротко, до 160 символов",
           "severity": "высокая | средняя | низкая",
           "confidence": 0.95
-        }}
+        }
       ]
-    }}
+    }
   ]
-}}
+}
 
-Если проблем нет — {{"issues":[]}}.
+Если проблем нет — {"issues":[]}.
 
 ДИАЛОГИ:
-{dialogs}"""
+{dialogs}
+```
+
+## Формат сообщений в диалоге
+
+```text
+ID: {conversation_id}
+[Клиент date={date}]: текст сообщения
+[Сотрудник date={date}]: текст сообщения
+```
+
+Если у сообщения нет `created_date`, `date` или `timestamp`, дата в строке не добавляется.
