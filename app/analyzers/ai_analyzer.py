@@ -50,6 +50,35 @@ def _employee_quote_after_client_quote(employee_quote: str, client_quote: str, m
     return any(emp_idx > client_idx for client_idx in client_indexes for emp_idx in employee_indexes)
 
 
+def _message_ts(message: dict) -> int | None:
+    for field in ("created_date", "date", "timestamp", "created_at"):
+        value = message.get(field)
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _quotes_are_close(employee_quote: str, client_quote: str, messages: list,
+                      max_seconds: int = 6 * 60 * 60, max_index_gap: int = 6) -> bool:
+    client_indexes = quote_message_indexes(client_quote, messages, role="client")
+    employee_indexes = quote_message_indexes(employee_quote, messages, role="employee")
+    for client_idx in client_indexes:
+        for employee_idx in employee_indexes:
+            client_ts = _message_ts(messages[client_idx])
+            employee_ts = _message_ts(messages[employee_idx])
+            if client_ts is not None and employee_ts is not None:
+                if abs(employee_ts - client_ts) <= max_seconds:
+                    return True
+                continue
+            if abs(employee_idx - client_idx) <= max_index_gap:
+                return True
+    return False
+
+
 def _message_id_for_quote(quote: str, messages: list, role: str = None) -> str:
     for index in quote_message_indexes(quote, messages, role=role):
         message = messages[index]
@@ -145,6 +174,9 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
         )
         if not any(marker in reasoning_norm for marker in contradiction_markers):
             logger.info(f"[SKIP WEAK_REASON] {conv['conversation_id']} НЕКОМПЕТЕНТНОСТЬ: нет явного противоречия")
+            return None
+        if not _quotes_are_close(emp_quote, client_quote, messages):
+            logger.info(f"[SKIP FAR_QUOTES] {conv['conversation_id']} НЕКОМПЕТЕНТНОСТЬ: цитаты из разных частей диалога")
             return None
 
     description = f"{reasoning} Цитата сотрудника: «{emp_quote}»"
