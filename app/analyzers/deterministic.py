@@ -16,6 +16,8 @@ BOT_EMPLOYEES = {"stax система", "stax system"}
 RETURN_REQUEST_MARKERS = (
     "записаться на сдачу", "запишите на сдачу", "записать на сдачу",
     "хочу сдать", "буду сдавать", "еду на сдачу", "поеду на сдачу",
+    "могу сдать", "смогу сдать", "можно сдать", "сдать сегодня",
+    "сдать завтра", "сдать или", "на сдачу",
     "сдать авто", "сдать автомобиль", "сдать машину", "сдача авто",
     "сдача автомобиля", "сдача машины", "вернуть авто", "вернуть автомобиль",
 )
@@ -31,6 +33,7 @@ RETENTION_OR_CLARIFICATION_MARKERS = (
     "разберемся", "разберёмся", "уточните", "подскажите", "предлож",
     "альтернатив", "другой автомобиль", "замен", "ремонт", "сервис",
     "попробуем решить", "решить вопрос", "можно оставить", "не сдавайте",
+    "кто был виновен", "кто виновен", "кто виноват", "дтп",
 )
 
 
@@ -215,12 +218,15 @@ def check_return_without_retention(conv: dict) -> dict | None:
 
     first_employee_reply = _first_employee_reply_after(messages, client_index)
     if not first_employee_reply:
+        logger.info(f"[SKIP СДАЧА_БЕЗ_УДЕРЖАНИЯ] {conv['conversation_id']}: нет ответа сотрудника после просьбы о сдаче")
         return None
 
     employee_quote = clean_text(first_employee_reply.get("text"))
     if not _has_any(employee_quote, SCHEDULING_ONLY_MARKERS):
+        logger.info(f"[SKIP СДАЧА_БЕЗ_УДЕРЖАНИЯ] {conv['conversation_id']}: ответ не только про день/время записи")
         return None
     if _has_any(employee_quote, RETENTION_OR_CLARIFICATION_MARKERS):
+        logger.info(f"[SKIP СДАЧА_БЕЗ_УДЕРЖАНИЯ] {conv['conversation_id']}: есть уточнение причины или попытка решения")
         return None
 
     logger.info(f"[СДАЧА_БЕЗ_УДЕРЖАНИЯ] {conv['conversation_id']}")
