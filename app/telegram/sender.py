@@ -101,6 +101,7 @@ def _risk_text(problem: dict) -> str:
         "НЕКОМПЕТЕНТНОСТЬ": "Возможная противоречивая информация, требуется проверка.",
         "БЕЗ_ОТВЕТА": "Клиент написал, но ответа сотрудника нет.",
         "БЕЗ_ПРИВЕТСТВИЯ": "Клиент начал диалог с приветствия, первый ответ сотрудника был без приветствия.",
+        "СДАЧА_БЕЗ_УДЕРЖАНИЯ": "Водителя записывают на сдачу без уточнения причины и попытки предложить решение.",
     }
     fallback = fallback_by_category.get(normalize_category(problem.get("category")), "Проблема требует проверки руководителем.")
     return _shorten(text.strip(" .;—-") or fallback, 180)
@@ -139,6 +140,8 @@ def _priority(problem: dict) -> str:
         return "P1"
     if category in {"КОНФЛИКТ", "НЕКОМПЕТЕНТНОСТЬ"} and severity in {"высокая", "средняя"}:
         return "P2"
+    if category == "СДАЧА_БЕЗ_УДЕРЖАНИЯ" and severity in {"высокая", "средняя"}:
+        return "P2"
     return "P3"
 
 
@@ -175,7 +178,7 @@ def _select_detail_rows(rows: list) -> list:
     return sorted((p1_rows + p2_rows[:3])[:5], key=_priority_sort_key)
 
 
-def _format_problem_card(row: dict, idx: int, compact: bool = False) -> list[str]:
+def _format_problem_card(row: dict, idx: int) -> list[str]:
     issue = row["issue"]
     problem = row["problem"]
     emp = clean_text(issue.get("employee")) or "Без ответа"
@@ -194,16 +197,12 @@ def _format_problem_card(row: dict, idx: int, compact: bool = False) -> list[str
         header += f" — {emp}"
 
     lines = ["", header, f"⚠️ Риск: {risk}"]
-    if compact:
-        if search_quote:
-            lines.append(f"🔎 Искать: {search_quote}")
-    else:
-        if client_quote:
-            lines.append(f"🙋 Клиент: {_quote(client_quote, 220)}")
-        if employee_quote:
-            lines.append(f"👤 Сотрудник: {_quote(employee_quote, 220)}")
-        if search_quote:
-            lines.append(f"🔎 Искать: {search_quote}")
+    if client_quote:
+        lines.append(f"🙋 Клиент: {_quote(client_quote, 220)}")
+    if employee_quote:
+        lines.append(f"👤 Сотрудник: {_quote(employee_quote, 220)}")
+    if search_quote:
+        lines.append(f"🔎 Искать: {search_quote}")
     if topic and topic != "Другое":
         lines.append(f"🏷️ Тема: {topic}")
     if conv_id:
@@ -345,8 +344,8 @@ def format_additional_report(fresh_issues: list) -> str:
 
     lines = [
         "📋 Остальные проблемы",
-        "Компактный список проблем, которые не попали в главный блок.",
+        "Полный список проблем, которые не попали в главный блок.",
     ]
     for idx, row in enumerate(hidden_rows, start=1):
-        lines.extend(_format_problem_card(row, idx, compact=True))
+        lines.extend(_format_problem_card(row, idx))
     return "\n".join(lines)
