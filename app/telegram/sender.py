@@ -49,17 +49,47 @@ def _source_name(chat_type: str) -> str:
     return chat_type or "Неизвестный источник"
 
 
+def _source_label(chat_type: str) -> str:
+    source = _source_name(chat_type)
+    lower = source.lower()
+    if lower.startswith("wazzup"):
+        emoji = "📲"
+    elif source == "Диспетчеры":
+        emoji = "💬"
+    elif source == "Менеджеры подписок":
+        emoji = "👥"
+    elif source == "Клиентское приложение":
+        emoji = "📱"
+    else:
+        emoji = "▫️"
+    return f"{emoji} {source}"
+
+
 def _topic_name(issue: dict) -> str:
     return clean_text(issue.get("topic")) or "Другое"
 
 
-def _quote(text: str, limit: int = 220) -> str:
+def _shorten(text: str, limit: int) -> str:
     text = clean_text(text)
-    if not text:
-        return ""
     if len(text) > limit:
         text = text[:limit - 1].rstrip() + "…"
+    return text
+
+
+def _quote(text: str, limit: int = 220) -> str:
+    text = _shorten(text, limit)
+    if not text:
+        return ""
     return f"«{text}»"
+
+
+def _risk_text(problem: dict) -> str:
+    text = clean_text(problem.get("reasoning")) or clean_text(problem.get("description"))
+    for marker in ("Цитата сотрудника:", "Реакция на:"):
+        pos = text.find(marker)
+        if pos >= 0:
+            text = text[:pos]
+    return _shorten(text.strip(" .;—-") or "Проблема требует проверки руководителем.", 180)
 
 
 def _priority(problem: dict) -> str:
@@ -186,7 +216,7 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
             if r["severity"] != "низкая" and (r["priority"] == "P1" or r["severity"] == "высокая")
         ]
         p2_rows = [r for r in rows if r not in p1_rows and r["priority"] == "P2" and r["severity"] != "низкая"]
-        detail_rows = p1_rows + p2_rows[:5]
+        detail_rows = (p1_rows + p2_rows[:3])[:5]
 
         lines += ["", "🔥 Проверить в первую очередь"]
         if not detail_rows:
@@ -201,31 +231,30 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
                 issue = row["issue"]
                 problem = row["problem"]
                 emp = clean_text(issue.get("employee")) or "Без ответа"
-                chat = clean_text(issue.get("chat_type"))
+                chat = _source_label(issue.get("chat_type"))
                 conv_id = clean_text(issue.get("conversation_id"))
                 link = clean_text(issue.get("dialog_link"))
                 first_msg = clean_text(issue.get("first_client_msg"))
                 topic = _topic_name(issue)
                 client_quote = clean_text(problem.get("client_quote")) or first_msg
                 employee_quote = clean_text(problem.get("employee_quote"))
-                description = clean_text(problem.get("reasoning")) or clean_text(problem.get("description"))
+                risk = _risk_text(problem)
                 header = f"{idx}. {_severity_emoji(row['severity'])} {row['category']} — {chat}"
                 if emp and emp != "Без ответа":
                     header += f" — {emp}"
                 lines.append("")
                 lines.append(header)
-                if description:
-                    lines.append(f"Суть: {description}")
-                if topic and topic != "Другое":
-                    lines.append(f"Тема: {topic}")
+                lines.append(f"⚠️ Риск: {risk}")
                 if client_quote:
-                    lines.append(f"Клиент: {_quote(client_quote)}")
+                    lines.append(f"🙋 Клиент: {_quote(client_quote, 220)}")
                 if employee_quote:
-                    lines.append(f"Сотрудник: {_quote(employee_quote)}")
+                    lines.append(f"👤 Сотрудник: {_quote(employee_quote, 220)}")
+                if topic and topic != "Другое":
+                    lines.append(f"🏷️ Тема: {topic}")
                 if conv_id:
-                    lines.append(f"ID: {conv_id}")
+                    lines.append(f"🆔 ID: {conv_id}")
                 if link:
-                    lines.append(f"Диалог: {link}")
+                    lines.append(f"🔗 Диалог: {link}")
 
         if len(detail_rows) < total_new:
             lines.append("")
