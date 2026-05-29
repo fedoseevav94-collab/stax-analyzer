@@ -28,7 +28,8 @@ def get_period_timestamps(now: datetime | None = None) -> dict:
         report_end_msk = report_start_msk + timedelta(days=1)
         period_mode = "retry"
     else:
-        report_end_msk = report_start_msk + timedelta(hours=19)
+        planned_end = report_start_msk + timedelta(hours=19)
+        report_end_msk = min(planned_end, now_msk)
         period_mode = "main"
 
     return {

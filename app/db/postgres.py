@@ -125,8 +125,9 @@ def record_problem(conn, conv_id: str, employee: str, chat_type: str,
 
 
 def update_employee_stats(conn, employee: str, chat_type: str,
-                          total_dialogs: int, problems_count: int) -> None:
-    today = datetime.now(MoscowTZ).date()
+                          total_dialogs: int, problems_count: int,
+                          stats_date=None) -> None:
+    date_value = stats_date or datetime.now(MoscowTZ).date()
     with conn.cursor() as cur:
         cur.execute("""
             INSERT INTO employee_daily_stats (date, employee, chat_type, total_dialogs, problems_count)
@@ -134,7 +135,7 @@ def update_employee_stats(conn, employee: str, chat_type: str,
             ON CONFLICT (date, employee, chat_type) DO UPDATE SET
                 total_dialogs = employee_daily_stats.total_dialogs + EXCLUDED.total_dialogs,
                 problems_count = employee_daily_stats.problems_count + EXCLUDED.problems_count
-        """, (today, employee, chat_type, total_dialogs, problems_count))
+        """, (date_value, employee, chat_type, total_dialogs, problems_count))
 
 
 def get_ai_processed_conversation_keys(conn, analysis_date, source: str, source_scope: str) -> set[tuple[str, str]]:

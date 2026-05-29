@@ -1,6 +1,8 @@
 """
 STAX AI QA Monitor — точка входа.
-Запускается GitHub Actions каждый день в 20:00 МСК.
+Запускается GitHub Actions:
+- 20:00 МСК: основной анализ текущего дня 00:00-19:00.
+- 02:00 МСК: ночной добор того же дня до полуночи.
 """
 import sys
 
@@ -221,7 +223,14 @@ def run() -> None:
     logger.info(f"Всего проблем: {total_count}, новых после дедупа: {new_count}")
 
     for (emp, ct), counts in employee_totals.items():
-        update_employee_stats(conn, emp, ct, counts["total_dialogs"], counts["problems_count"])
+        update_employee_stats(
+            conn,
+            emp,
+            ct,
+            counts["total_dialogs"],
+            counts["problems_count"],
+            stats_date=period["analysis_date"],
+        )
 
     stats = ai_stats()
     logger.info(f"AI стат: всего {stats['calls']}, упало {stats['failures']}")
