@@ -239,6 +239,51 @@ def _partial_analysis_warning(run_status: str, analysis_stats: dict | None) -> s
     return "⚠️ Анализ выполнен частично: AI был недоступен на части диалогов."
 
 
+def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
+    if not analysis_stats:
+        return []
+
+    candidates = int(analysis_stats.get("ai_candidates") or analysis_stats.get("sent_to_ai") or 0)
+    processed = int(analysis_stats.get("ai_processed") or 0)
+    skipped_filter = int(analysis_stats.get("skipped_by_filter") or 0)
+    skipped_done = int(analysis_stats.get("ai_skipped_already_processed") or 0)
+    skipped_low = int(analysis_stats.get("ai_skipped_low_priority") or 0)
+    errors = int(analysis_stats.get("ai_errors") or 0)
+
+    if not any((candidates, skipped_filter, skipped_done, skipped_low, errors)):
+        return []
+
+    lines = [
+        "🤖 AI-проверка",
+        f"Кандидатов обработано: {processed}/{candidates}",
+    ]
+    if skipped_filter:
+        lines.append(f"Пропущено фильтром: {skipped_filter}")
+    if skipped_done:
+        lines.append(f"Уже обработано ранее: {skipped_done}")
+    if skipped_low:
+        lines.append(f"Пропущено из-за лимитов: {skipped_low}")
+    if errors:
+        lines.append(f"AI ошибок: {errors}")
+
+    by_source: dict[str, dict[str, int]] = {}
+    for row in analysis_stats.get("source_breakdown", []) or []:
+        name = _source_name(row.get("source_name"))
+        sent = int(row.get("sent_to_ai") or 0)
+        done = int(row.get("ai_processed") or 0)
+        if not sent and not done:
+            continue
+        current = by_source.setdefault(name, {"sent": 0, "done": 0})
+        current["sent"] += sent
+        current["done"] += done
+
+    if by_source:
+        parts = [f"{name} {counts['done']}/{counts['sent']}" for name, counts in by_source.items()]
+        lines.append(f"По источникам AI: {', '.join(parts)}")
+
+    return lines
+
+
 def format_report(fresh_issues: list, total_count: int, period: dict,
                   run_status: str, weekly_top: list, analysis_stats: dict | None = None) -> str:
     start_msk = period["report_start_msk"]
@@ -250,20 +295,25 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
     hidden_repeats = max(0, total_count - total_new)
     status_text = _analysis_status_text(run_status, analysis_stats)
     partial_warning = _partial_analysis_warning(run_status, analysis_stats)
+    ai_summary_lines = _ai_summary_lines(analysis_stats)
 
     if not fresh_issues:
-        body = (
-            f"🔍 STAX AI Analyzer\n"
-            f"Период: {period_str}\n"
-            f"\n📊 Сводка\n"
-            f"Проблемных диалогов: 0\n"
-            f"Всего проблем: 0\n"
-            f"Повторов скрыто: {hidden_repeats}\n"
-            f"Статус анализа: {status_text}\n"
-            f"\nПроблем не обнаружено."
-        )
+        lines = [
+            "🔍 STAX AI Analyzer",
+            f"Период: {period_str}",
+            "",
+            "📊 Сводка",
+            "Проблемных диалогов: 0",
+            "Всего проблем: 0",
+            f"Повторов скрыто: {hidden_repeats}",
+            f"Статус анализа: {status_text}",
+        ]
         if partial_warning:
-            body = body.replace("\n\nПроблем не обнаружено.", f"\n{partial_warning}\n\nПроблем не обнаружено.")
+            lines.append(partial_warning)
+        if ai_summary_lines:
+            lines += [""] + ai_summary_lines
+        lines += ["", "Проблем не обнаружено."]
+        body = "\n".join(lines)
         if total_count > 0:
             body += f"\n(Найдено {total_count} проблем, все уже репортились ранее за {DEDUP_WINDOW_DAYS} дней.)"
     else:
@@ -284,6 +334,8 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
         ]
         if partial_warning:
             lines.append(partial_warning)
+        if ai_summary_lines:
+            lines += [""] + ai_summary_lines
         lines += [
             "",
             "🚦 Риски",
