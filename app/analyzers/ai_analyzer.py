@@ -45,6 +45,12 @@ def _extract_json(raw: str) -> dict:
 
 
 def _message_ts(message: dict) -> int | None:
+    if message.get("created_ts") is not None:
+        try:
+            return int(message.get("created_ts"))
+        except (TypeError, ValueError):
+            pass
+
     for field in ("created_date", "date", "timestamp", "created_at"):
         value = message.get(field)
         if value in (None, ""):
