@@ -83,7 +83,9 @@ def _first_client_message_obj(messages: list) -> dict | None:
 
 def _problem(category: str, description: str, severity: str, priority: str,
              client_quote: str = "", employee_quote: str = "",
-             confidence: float = 1.0, message_id: str = "") -> dict:
+             confidence: float = 1.0, message_id: str = "",
+             client_message_index: int | None = None,
+             employee_message_index: int | None = None) -> dict:
     problem = {
         "category": category,
         "description": description,
@@ -95,6 +97,10 @@ def _problem(category: str, description: str, severity: str, priority: str,
     }
     if message_id:
         problem["message_id"] = message_id
+    if client_message_index is not None:
+        problem["client_message_index"] = client_message_index
+    if employee_message_index is not None:
+        problem["employee_message_index"] = employee_message_index
     return problem
 
 
@@ -124,6 +130,15 @@ def _message_id(message: dict | None) -> str:
     return clean_text(message.get("message_id")) or clean_text(message.get("id"))
 
 
+def _message_index(message: dict | None) -> int | None:
+    if not message:
+        return None
+    try:
+        return int(message.get("message_index"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _has_any(text: str, phrases: tuple[str, ...]) -> bool:
     normalized = _norm(text)
     return any(phrase in normalized for phrase in phrases)
@@ -136,8 +151,10 @@ def _first_non_empty(messages: list) -> tuple[int, dict] | tuple[None, None]:
     return None, None
 
 
-def _first_employee_reply_after(messages: list, start_index: int) -> dict | None:
+def _first_employee_reply_after(messages: list, start_index: int, episode_id=None) -> dict | None:
     for message in messages[start_index + 1:]:
+        if episode_id is not None and message.get("episode_id") != episode_id:
+            break
         if message.get("role") == "employee" and clean_text(message.get("text")):
             return message
     return None
@@ -180,6 +197,7 @@ def check_no_reply(conv: dict) -> dict | None:
         priority="P1",
         client_quote=first_msg,
         message_id=_message_id(first_client),
+        client_message_index=_message_index(first_client),
     )])
 
 
@@ -199,7 +217,7 @@ def check_no_greeting(conv: dict) -> dict | None:
     if not _has_any(first_client_msg, CLIENT_GREETINGS):
         return None
 
-    first_employee_reply = _first_employee_reply_after(messages, first_index)
+    first_employee_reply = _first_employee_reply_after(messages, first_index, first_message.get("episode_id"))
     if not first_employee_reply:
         return None
 
@@ -216,6 +234,8 @@ def check_no_greeting(conv: dict) -> dict | None:
         client_quote=first_client_msg,
         employee_quote=employee_quote,
         message_id=_message_id(first_employee_reply),
+        client_message_index=_message_index(first_message),
+        employee_message_index=_message_index(first_employee_reply),
     )])
 
 
@@ -231,7 +251,11 @@ def check_return_without_retention(conv: dict) -> dict | None:
     if client_index is None:
         return None
 
-    first_employee_reply = _first_employee_reply_after(messages, client_index)
+    first_employee_reply = _first_employee_reply_after(
+        messages,
+        client_index,
+        messages[client_index].get("episode_id"),
+    )
     if not first_employee_reply:
         logger.info(f"[SKIP СДАЧА_БЕЗ_УДЕРЖАНИЯ] {conv['conversation_id']}: нет ответа сотрудника после просьбы о сдаче")
         return None
@@ -253,4 +277,6 @@ def check_return_without_retention(conv: dict) -> dict | None:
         client_quote=client_quote,
         employee_quote=employee_quote,
         message_id=_message_id(first_employee_reply),
+        client_message_index=_message_index(messages[client_index]),
+        employee_message_index=_message_index(first_employee_reply),
     )])

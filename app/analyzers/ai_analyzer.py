@@ -6,7 +6,7 @@ import time
 
 from app.ai.prompts import make_batches, build_analysis_prompt, ANALYSIS_SYSTEM
 from app.ai.providers import call_ai
-from app.analyzers.quote_validator import quote_exists_in_messages, quote_message_indexes
+from app.analyzers.quote_validator import quote_exists_in_message
 from app.config import CONFIDENCE_THRESHOLD, AI_BATCH_DELAY_SECONDS
 from app.logger import logger
 from app.utils.text import clean_text, normalize_category
@@ -44,12 +44,6 @@ def _extract_json(raw: str) -> dict:
     return json.loads(raw[start:end])
 
 
-def _employee_quote_after_client_quote(employee_quote: str, client_quote: str, messages: list) -> bool:
-    client_indexes = quote_message_indexes(client_quote, messages, role="client")
-    employee_indexes = quote_message_indexes(employee_quote, messages, role="employee")
-    return any(emp_idx > client_idx for client_idx in client_indexes for emp_idx in employee_indexes)
-
-
 def _message_ts(message: dict) -> int | None:
     for field in ("created_date", "date", "timestamp", "created_at"):
         value = message.get(field)
@@ -62,30 +56,57 @@ def _message_ts(message: dict) -> int | None:
     return None
 
 
-def _quotes_are_close(employee_quote: str, client_quote: str, messages: list,
-                      max_seconds: int = 6 * 60 * 60, max_index_gap: int = 6) -> bool:
-    client_indexes = quote_message_indexes(client_quote, messages, role="client")
-    employee_indexes = quote_message_indexes(employee_quote, messages, role="employee")
-    for client_idx in client_indexes:
-        for employee_idx in employee_indexes:
-            client_ts = _message_ts(messages[client_idx])
-            employee_ts = _message_ts(messages[employee_idx])
-            if client_ts is not None and employee_ts is not None:
-                if abs(employee_ts - client_ts) <= max_seconds:
-                    return True
-                continue
-            if abs(employee_idx - client_idx) <= max_index_gap:
-                return True
-    return False
+def _problem_message_index(problem: dict, field: str) -> int | None:
+    value = problem.get(field)
+    if value in (None, ""):
+        return None
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return index if index > 0 else None
 
 
-def _message_id_for_quote(quote: str, messages: list, role: str = None) -> str:
-    for index in quote_message_indexes(quote, messages, role=role):
-        message = messages[index]
-        message_id = clean_text(message.get("message_id")) or clean_text(message.get("id"))
-        if message_id:
-            return message_id
-    return ""
+def _message_by_index(messages: list, public_index: int | None) -> dict | None:
+    if public_index is None:
+        return None
+    for message in messages:
+        try:
+            if int(message.get("message_index")) == public_index:
+                return message
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _message_id(message: dict | None) -> str:
+    if not message:
+        return ""
+    return clean_text(message.get("message_id")) or clean_text(message.get("id"))
+
+
+def _same_episode(left: dict | None, right: dict | None) -> bool:
+    if not left or not right:
+        return False
+    left_episode = left.get("episode_id")
+    right_episode = right.get("episode_id")
+    if left_episode in (None, "") or right_episode in (None, ""):
+        return True
+    return str(left_episode) == str(right_episode)
+
+
+def _messages_are_close(employee_message: dict, client_message: dict,
+                        max_seconds: int = 6 * 60 * 60, max_index_gap: int = 6) -> bool:
+    employee_ts = _message_ts(employee_message)
+    client_ts = _message_ts(client_message)
+    if employee_ts is not None and client_ts is not None:
+        return abs(employee_ts - client_ts) <= max_seconds
+    try:
+        employee_index = int(employee_message.get("message_index"))
+        client_index = int(client_message.get("message_index"))
+    except (TypeError, ValueError):
+        return False
+    return abs(employee_index - client_index) <= max_index_gap
 
 
 def _employee_quote_shows_conflict(employee_quote: str) -> bool:
@@ -142,25 +163,52 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
     messages = conv.get("messages", [])
     emp_quote = clean_text(problem.get("employee_quote"))
     client_quote = clean_text(problem.get("client_quote"))
+    employee_index = _problem_message_index(problem, "employee_message_index")
+    client_index = _problem_message_index(problem, "client_message_index")
 
     if not emp_quote:
         logger.info(f"[SKIP NO_Q] {conv['conversation_id']} {category}: нет цитаты сотрудника")
         return None
-    if not quote_exists_in_messages(emp_quote, messages, role="employee"):
-        logger.info(f"[SKIP FAKE_Q] {conv['conversation_id']} {category}: цитата сотр. {emp_quote[:60]!r} не найдена")
+    if employee_index is None:
+        logger.info(f"[SKIP NO_INDEX] {conv['conversation_id']} {category}: нет employee_message_index")
         return None
-    if client_quote and not quote_exists_in_messages(client_quote, messages, role="client"):
-        logger.info(f"[SKIP FAKE_Q] {conv['conversation_id']} {category}: цитата клиента {client_quote[:60]!r} не найдена")
+
+    employee_message = _message_by_index(messages, employee_index)
+    if not employee_message or not quote_exists_in_message(emp_quote, employee_message, role="employee"):
+        logger.info(
+            f"[SKIP BAD_INDEX] {conv['conversation_id']} {category}: "
+            f"employee_quote не найден в #{employee_index}"
+        )
         return None
+
+    client_message = None
+    if client_quote:
+        if client_index is None:
+            logger.info(f"[SKIP NO_INDEX] {conv['conversation_id']} {category}: нет client_message_index")
+            return None
+        client_message = _message_by_index(messages, client_index)
+        if not client_message or not quote_exists_in_message(client_quote, client_message, role="client"):
+            logger.info(
+                f"[SKIP BAD_INDEX] {conv['conversation_id']} {category}: "
+                f"client_quote не найден в #{client_index}"
+            )
+            return None
+    elif client_index is not None:
+        client_message = _message_by_index(messages, client_index)
+
     if category == "КОНФЛИКТ" and not client_quote:
         logger.info(f"[SKIP NO_CLIENT_Q] {conv['conversation_id']} КОНФЛИКТ: нет цитаты клиента")
         return None
-    if category == "КОНФЛИКТ" and not _employee_quote_after_client_quote(emp_quote, client_quote, messages):
-        logger.info(f"[SKIP BAD_ORDER] {conv['conversation_id']} КОНФЛИКТ: ответ сотрудника не после жалобы клиента")
-        return None
-    if category == "КОНФЛИКТ" and not _employee_quote_shows_conflict(emp_quote):
-        logger.info(f"[SKIP NEUTRAL_REPLY] {conv['conversation_id']} КОНФЛИКТ: цитата сотрудника не доказывает конфликт")
-        return None
+    if category == "КОНФЛИКТ":
+        if employee_index <= client_index:
+            logger.info(f"[SKIP BAD_ORDER] {conv['conversation_id']} КОНФЛИКТ: ответ сотрудника не после жалобы клиента")
+            return None
+        if not _same_episode(employee_message, client_message):
+            logger.info(f"[SKIP DIFF_EPISODE] {conv['conversation_id']} КОНФЛИКТ: цитаты из разных эпизодов")
+            return None
+        if not _employee_quote_shows_conflict(emp_quote):
+            logger.info(f"[SKIP NEUTRAL_REPLY] {conv['conversation_id']} КОНФЛИКТ: цитата сотрудника не доказывает конфликт")
+            return None
 
     reasoning = clean_text(problem.get("reasoning")) or "—"
     if category == "НЕКОМПЕТЕНТНОСТЬ":
@@ -175,7 +223,10 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
         if not any(marker in reasoning_norm for marker in contradiction_markers):
             logger.info(f"[SKIP WEAK_REASON] {conv['conversation_id']} НЕКОМПЕТЕНТНОСТЬ: нет явного противоречия")
             return None
-        if not _quotes_are_close(emp_quote, client_quote, messages):
+        if employee_index == client_index or not _same_episode(employee_message, client_message):
+            logger.info(f"[SKIP DIFF_EPISODE] {conv['conversation_id']} НЕКОМПЕТЕНТНОСТЬ: цитаты из разных эпизодов")
+            return None
+        if not _messages_are_close(employee_message, client_message):
             logger.info(f"[SKIP FAR_QUOTES] {conv['conversation_id']} НЕКОМПЕТЕНТНОСТЬ: цитаты из разных частей диалога")
             return None
 
@@ -183,9 +234,7 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
     if client_quote:
         description += f" Реакция на: «{client_quote}»"
     severity = clean_text(problem.get("severity")) or "средняя"
-    message_id = _message_id_for_quote(emp_quote, messages, role="employee")
-    if not message_id and client_quote:
-        message_id = _message_id_for_quote(client_quote, messages, role="client")
+    message_id = _message_id(employee_message) or _message_id(client_message)
 
     validated = {
         "category": category,
@@ -194,8 +243,11 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
         "confidence": confidence,
         "employee_quote": emp_quote,
         "client_quote": client_quote,
+        "employee_message_index": employee_index,
         "priority": calculate_priority(category, severity, client_quote, description),
     }
+    if client_index is not None:
+        validated["client_message_index"] = client_index
     if message_id:
         validated["message_id"] = message_id
     return validated
@@ -205,6 +257,7 @@ def _empty_stats(candidates_count: int) -> dict:
     return {
         "candidates": candidates_count,
         "processed": 0,
+        "processed_keys": [],
         "skipped_low_priority": 0,
         "errors": 0,
         "rate_limited": False,
@@ -245,6 +298,13 @@ def analyze_with_ai(candidates: list) -> tuple[list, dict]:
             raw = call_ai(ANALYSIS_SYSTEM, build_analysis_prompt(batch))
             parsed = _extract_json(raw)
             stats["processed"] += len(batch)
+            stats["processed_keys"].extend(
+                {
+                    "conversation_id": c["conversation_id"],
+                    "last_message_key": c.get("last_message_key", ""),
+                }
+                for c in batch
+            )
 
             for item in parsed.get("issues", []) or []:
                 cid = str(item.get("conversation_id", "")).strip()

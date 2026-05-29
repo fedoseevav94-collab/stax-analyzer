@@ -128,6 +128,14 @@ def build_message_link(issue: dict, problem: dict) -> str:
     return fallback
 
 
+def _message_link_label(issue: dict, problem: dict) -> str:
+    message_id = clean_text(problem.get("message_id")) or clean_text(issue.get("message_id"))
+    source = clean_text(issue.get("source")).lower()
+    if message_id and source in {"telegram", "client_app"}:
+        return "Сообщение"
+    return "Диалог"
+
+
 def _priority(problem: dict) -> str:
     priority = clean_text(problem.get("priority")).upper()
     if priority in {"P1", "P2", "P3"}:
@@ -208,7 +216,7 @@ def _format_problem_card(row: dict, idx: int) -> list[str]:
     if conv_id:
         lines.append(f"🆔 ID: {conv_id}")
     if link:
-        lines.append(f"🔗 Диалог: {link}")
+        lines.append(f"🔗 {_message_link_label(issue, problem)}: {link}")
     return lines
 
 

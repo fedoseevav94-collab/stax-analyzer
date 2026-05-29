@@ -15,6 +15,7 @@ from app.db.postgres import (
     get_connection, init_db,
     is_duplicate_problem, record_problem, update_employee_stats,
     get_weekly_top_offenders, record_run_start, record_run_finish,
+    get_ai_processed_conversation_keys, record_ai_processed_dialogs,
 )
 from app.exporters.base import fetch_conversations
 from app.exporters.wazzup import fetch_wazzup_channels
@@ -69,6 +70,7 @@ def run() -> None:
     logger.info("=" * 60)
     logger.info("STAX Analyzer запущен")
     logger.info(f"Период МСК: {period['report_start_msk']} → {period['report_end_msk']}")
+    logger.info(f"Режим периода: {period.get('period_mode')} / дата анализа: {period.get('analysis_date')}")
     logger.info(f"Confidence threshold: {CONFIDENCE_THRESHOLD}, Dedup window: {DEDUP_WINDOW_DAYS}д")
 
     conn = get_connection()
@@ -87,17 +89,42 @@ def run() -> None:
         "ai_skipped_low_priority": 0,
         "ai_errors": 0,
         "ai_rate_limited": False,
+        "ai_skipped_already_processed": 0,
     }
+    ai_processed_records: list[dict] = []
 
     def merge_analysis_stats(stats: dict) -> None:
         for key in (
             "loaded", "sent_to_ai", "skipped_by_filter", "ai_candidates",
             "ai_processed", "ai_skipped_low_priority", "ai_errors",
+            "ai_skipped_already_processed",
         ):
             analysis_totals[key] += int(stats.get(key) or 0)
         analysis_totals["ai_rate_limited"] = (
             analysis_totals["ai_rate_limited"] or bool(stats.get("ai_rate_limited"))
         )
+
+    def processed_keys_for(source: str, source_scope: str) -> set[tuple[str, str]]:
+        nonlocal conn
+        try:
+            return get_ai_processed_conversation_keys(conn, period["analysis_date"], source, source_scope)
+        except Exception as exc:
+            logger.warning(f"[DB] не удалось прочитать AI processed cache, переподключаюсь: {exc}")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = get_connection()
+            return get_ai_processed_conversation_keys(conn, period["analysis_date"], source, source_scope)
+
+    def collect_processed_records(source: str, source_scope: str, stats: dict) -> None:
+        for item in stats.get("ai_processed_keys", []) or []:
+            ai_processed_records.append({
+                "source": source,
+                "source_scope": source_scope,
+                "conversation_id": item.get("conversation_id"),
+                "last_message_key": item.get("last_message_key"),
+            })
 
     def add_stats(chat_type: str, dialogs_count: int, issues: list) -> None:
         per_emp: dict = {}
@@ -119,9 +146,13 @@ def run() -> None:
         convs = fetch_conversations(cfg["url"], period["fetch_start_ts"], period["fetch_end_ts"])
         logger.info(f"Диалогов выгружено: {len(convs)}")
         if convs:
+            source_scope = str(cfg["chat_id"])
+            skip_keys = processed_keys_for("telegram", source_scope)
             issues, dc, source_stats = analyze_source(convs, chat_type=chat_type, source="telegram",
-                                                      chat_id=cfg["chat_id"])
+                                                      chat_id=cfg["chat_id"],
+                                                      skip_ai_conversation_keys=skip_keys)
             merge_analysis_stats(source_stats)
+            collect_processed_records("telegram", source_scope, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
             all_issues.extend(issues)
             add_stats(chat_type, dc, issues)
@@ -132,12 +163,16 @@ def run() -> None:
     convs = fetch_conversations(CLIENT_APP_URL, period["fetch_start_ts"], period["fetch_end_ts"])
     logger.info(f"Диалогов выгружено: {len(convs)}")
     if convs:
+        source_scope = "client_app"
+        skip_keys = processed_keys_for("client_app", source_scope)
         issues, dc, source_stats = analyze_source(
             convs,
             chat_type="Клиентское приложение",
             source="client_app",
+            skip_ai_conversation_keys=skip_keys,
         )
         merge_analysis_stats(source_stats)
+        collect_processed_records("client_app", source_scope, source_stats)
         logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
         all_issues.extend(issues)
         add_stats("Клиентское приложение", dc, issues)
@@ -161,9 +196,12 @@ def run() -> None:
         )
         logger.info(f"Диалогов выгружено: {len(convs)}")
         if convs:
+            skip_keys = processed_keys_for("wazzup", channel_id)
             issues, dc, source_stats = analyze_source(convs, chat_type=f"Wazzup: {channel_title}",
-                                                      source="wazzup", channel_id=channel_id)
+                                                      source="wazzup", channel_id=channel_id,
+                                                      skip_ai_conversation_keys=skip_keys)
             merge_analysis_stats(source_stats)
+            collect_processed_records("wazzup", channel_id, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
             all_issues.extend(issues)
             add_stats(f"Wazzup: {channel_title}", dc, issues)
@@ -177,6 +215,7 @@ def run() -> None:
     except Exception:
         pass
     conn = get_connection()
+    record_ai_processed_dialogs(conn, period["analysis_date"], ai_processed_records)
     fresh_issues, total_count = dedup_and_record(conn, all_issues)
     new_count = sum(len(i["problems"]) for i in fresh_issues)
     logger.info(f"Всего проблем: {total_count}, новых после дедупа: {new_count}")

@@ -11,6 +11,7 @@ from app.analyzers.deterministic import (
     has_employee_reply,
 )
 from app.analyzers.ai_analyzer import analyze_with_ai
+from app.analyzers.episodes import conversation_last_message_key, prepare_messages
 from app.config import WAZZUP_FRONTEND_BASE_URL, CLIENT_APP_FRONTEND_BASE_URL
 from app.logger import logger
 from app.utils.text import clean_text, is_substantive_client_message
@@ -62,7 +63,7 @@ def _build_dialog_link(source: str, conv_id: str, chat_id: str = "", channel_id:
 
 def _normalize_conversation(conv: dict, chat_type: str, source: str,
                              chat_id: str = "", channel_id: str = "") -> dict:
-    messages = conv.get("messages", []) or []
+    messages = prepare_messages(conv.get("messages", []) or [])
     conv_id = str(conv.get("conversation_id", "")).strip()
     first_msg = ""
     for m in messages:
@@ -80,6 +81,7 @@ def _normalize_conversation(conv: dict, chat_type: str, source: str,
         "dialog_link": _build_dialog_link(source, conv_id, chat_id, channel_id),
         "first_client_msg": first_msg,
         "topic": detect_topic(messages),
+        "last_message_key": conversation_last_message_key(messages),
         "messages": messages,
     }
 
@@ -115,7 +117,12 @@ def _is_obviously_normal_short_dialog(messages: list) -> bool:
 def _max_client_streak(messages: list) -> int:
     max_streak = 0
     current = 0
+    current_episode = None
     for m in messages:
+        episode_id = m.get("episode_id")
+        if episode_id != current_episode:
+            current = 0
+            current_episode = episode_id
         if m.get("role") == "client" and is_substantive_client_message(m.get("text")):
             current += 1
             max_streak = max(max_streak, current)
@@ -126,7 +133,12 @@ def _max_client_streak(messages: list) -> int:
 
 def _employee_short_after_complaint(messages: list) -> bool:
     saw_complaint = False
+    current_episode = None
     for m in messages:
+        episode_id = m.get("episode_id")
+        if episode_id != current_episode:
+            saw_complaint = False
+            current_episode = episode_id
         role = m.get("role")
         text = _norm_for_filter(m.get("text"))
         if not text:
@@ -193,7 +205,8 @@ def _merge_issues_by_conversation(issues: list) -> list:
 
 
 def analyze_source(conversations: list, chat_type: str, source: str,
-                   chat_id: str = "", channel_id: str = "") -> tuple[list, int, dict]:
+                   chat_id: str = "", channel_id: str = "",
+                   skip_ai_conversation_keys: set[tuple[str, str]] | None = None) -> tuple[list, int, dict]:
     """
     Возвращает (issues, total_dialogs_count, analysis_stats).
     """
@@ -217,6 +230,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
     all_issues: list = []
     ai_candidates: list = []
     skipped_by_filter = 0
+    skipped_already_processed = 0
+    skip_ai_conversation_keys = skip_ai_conversation_keys or set()
 
     # Боты — не анализируем через AI
     BOT_EMPLOYEES = {"stax система", "stax system"}
@@ -242,6 +257,11 @@ def analyze_source(conversations: list, chat_type: str, source: str,
 
             should_send, priority, reason = _ai_filter_decision(conv)
             if should_send:
+                processed_key = (conv["conversation_id"], conv.get("last_message_key", ""))
+                if processed_key in skip_ai_conversation_keys:
+                    skipped_already_processed += 1
+                    logger.info(f"[AI SKIP DONE] {conv['conversation_id']}: уже обработан AI, новых сообщений нет")
+                    continue
                 conv["ai_candidate_priority"] = priority
                 logger.info(f"[AI CANDIDATE] {conv['conversation_id']} {priority}: {reason}")
                 ai_candidates.append(conv)
@@ -268,6 +288,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         "ai_skipped_low_priority": ai_stats["skipped_low_priority"],
         "ai_errors": ai_stats["errors"],
         "ai_rate_limited": ai_stats["rate_limited"],
+        "ai_skipped_already_processed": skipped_already_processed,
+        "ai_processed_keys": ai_stats.get("processed_keys", []),
     }
 
     if source == "wazzup":
@@ -276,6 +298,7 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         logger.info(f"После дедупа: {stats['after_dedup']}")
         logger.info(f"Отправлено в AI: {stats['sent_to_ai']}")
         logger.info(f"Пропущено фильтром: {stats['skipped_by_filter']}")
+        logger.info(f"Пропущено как уже обработанные AI: {stats['ai_skipped_already_processed']}")
         logger.info(f"Проблем: {stats['problems']}")
     else:
         logger.info(f"Источник: {chat_type}")
@@ -283,6 +306,7 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         logger.info(f"После дедупа: {stats['after_dedup']}")
         logger.info(f"Отправлено в AI: {stats['sent_to_ai']}")
         logger.info(f"Пропущено фильтром: {stats['skipped_by_filter']}")
+        logger.info(f"Пропущено как уже обработанные AI: {stats['ai_skipped_already_processed']}")
         logger.info(f"Найдено проблем: {stats['problems']}")
         logger.info(f"AI ошибок: {stats['ai_errors']}")
 

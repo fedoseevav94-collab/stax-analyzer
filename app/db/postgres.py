@@ -65,6 +65,22 @@ def init_db(conn) -> None:
                 status TEXT
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ai_processed_dialogs (
+                id BIGSERIAL PRIMARY KEY,
+                analysis_date DATE NOT NULL,
+                source TEXT NOT NULL,
+                source_scope TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                last_message_key TEXT NOT NULL,
+                processed_at TIMESTAMP NOT NULL,
+                UNIQUE(analysis_date, source, source_scope, conversation_id, last_message_key)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_processed_dialogs_lookup
+            ON ai_processed_dialogs(analysis_date, source, source_scope)
+        """)
     conn.commit()
     logger.info("БД инициализирована")
 
@@ -119,6 +135,54 @@ def update_employee_stats(conn, employee: str, chat_type: str,
                 total_dialogs = employee_daily_stats.total_dialogs + EXCLUDED.total_dialogs,
                 problems_count = employee_daily_stats.problems_count + EXCLUDED.problems_count
         """, (today, employee, chat_type, total_dialogs, problems_count))
+
+
+def get_ai_processed_conversation_keys(conn, analysis_date, source: str, source_scope: str) -> set[tuple[str, str]]:
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT conversation_id, last_message_key
+            FROM ai_processed_dialogs
+            WHERE analysis_date = %s
+              AND source = %s
+              AND source_scope = %s
+        """, (analysis_date, source, source_scope))
+        return {(str(row[0]), str(row[1])) for row in cur.fetchall()}
+
+
+def record_ai_processed_dialogs(conn, analysis_date, records: list[dict]) -> None:
+    if not records:
+        return
+
+    now = datetime.now(MoscowTZ)
+    rows = [
+        (
+            analysis_date,
+            clean_text_or_empty(row.get("source")),
+            clean_text_or_empty(row.get("source_scope")),
+            clean_text_or_empty(row.get("conversation_id")),
+            clean_text_or_empty(row.get("last_message_key")),
+            now,
+        )
+        for row in records
+        if row.get("conversation_id") and row.get("last_message_key")
+    ]
+    if not rows:
+        return
+
+    with conn.cursor() as cur:
+        psycopg2.extras.execute_values(cur, """
+            INSERT INTO ai_processed_dialogs (
+                analysis_date, source, source_scope, conversation_id,
+                last_message_key, processed_at
+            )
+            VALUES %s
+            ON CONFLICT (analysis_date, source, source_scope, conversation_id, last_message_key)
+            DO UPDATE SET processed_at = EXCLUDED.processed_at
+        """, rows)
+
+
+def clean_text_or_empty(value) -> str:
+    return str(value or "").strip()
 
 
 def get_weekly_top_offenders(conn, top_n: int = 3) -> list:
