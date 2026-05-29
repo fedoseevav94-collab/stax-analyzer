@@ -58,3 +58,12 @@ def quote_exists_in_messages(quote: str, messages: list, role: str = None) -> bo
         return False
 
     return bool(quote_message_indexes(quote, messages, role=role))
+
+
+def quote_exists_in_message(quote: str, message: dict, role: str = None) -> bool:
+    """True если цитата относится к конкретному сообщению."""
+    if not quote or not message:
+        return False
+    if role and message.get("role") != role:
+        return False
+    return bool(quote_message_indexes(quote, [message], role=role))
