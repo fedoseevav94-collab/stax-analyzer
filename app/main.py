@@ -92,6 +92,7 @@ def run() -> None:
         "ai_errors": 0,
         "ai_rate_limited": False,
         "ai_skipped_already_processed": 0,
+        "source_breakdown": [],
     }
     ai_processed_records: list[dict] = []
 
@@ -105,6 +106,15 @@ def run() -> None:
         analysis_totals["ai_rate_limited"] = (
             analysis_totals["ai_rate_limited"] or bool(stats.get("ai_rate_limited"))
         )
+        if stats.get("source_name"):
+            analysis_totals["source_breakdown"].append({
+                "source_name": stats.get("source_name"),
+                "loaded": int(stats.get("loaded") or 0),
+                "sent_to_ai": int(stats.get("sent_to_ai") or 0),
+                "ai_processed": int(stats.get("ai_processed") or 0),
+                "skipped_by_filter": int(stats.get("skipped_by_filter") or 0),
+                "ai_skipped_already_processed": int(stats.get("ai_skipped_already_processed") or 0),
+            })
 
     def processed_keys_for(source: str, source_scope: str) -> set[tuple[str, str]]:
         nonlocal conn
