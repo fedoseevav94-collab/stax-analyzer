@@ -153,6 +153,23 @@ def test_incompetence_with_far_quotes_is_rejected():
     assert _validate_problem(problem, conv) is None
 
 
+def test_incompetence_with_external_client_claim_is_rejected():
+    conv = _conv([
+        _message("client", "В интернете вроде написано что можно оформить лицензию", 1),
+        _message("employee", "Оформить лицензию на ваш авто не получится", 2),
+    ])
+    problem = _problem(
+        "НЕКОМПЕТЕНТНОСТЬ",
+        "Оформить лицензию на ваш авто не получится",
+        2,
+        client_quote="В интернете вроде написано что можно оформить лицензию",
+        client_index=1,
+        reasoning="Цитаты противоречат друг другу внутри диалога",
+    )
+
+    assert _validate_problem(problem, conv) is None
+
+
 def test_valid_conflict_is_accepted():
     conv = _conv([
         _message("client", "Вы не вернете мне деньги?", 1, message_id=101),

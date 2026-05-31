@@ -63,8 +63,16 @@ def test_format_report_shows_ai_processing_summary_by_source():
         "ai_candidates": 11,
         "ai_processed": 11,
         "skipped_by_filter": 8,
+        "return_requests_checked": 4,
+        "return_without_retention_found": 1,
         "source_breakdown": [
-            {"source_name": "Диспетчеры", "sent_to_ai": 5, "ai_processed": 5},
+            {
+                "source_name": "Диспетчеры",
+                "sent_to_ai": 5,
+                "ai_processed": 5,
+                "return_requests_checked": 4,
+                "return_without_retention_found": 1,
+            },
             {"source_name": "Менеджеры подписок", "sent_to_ai": 1, "ai_processed": 1},
             {"source_name": "Клиентское приложение", "sent_to_ai": 5, "ai_processed": 5},
         ],
@@ -76,3 +84,6 @@ def test_format_report_shows_ai_processing_summary_by_source():
     assert "Кандидатов обработано: 11/11" in report
     assert "Пропущено фильтром: 8" in report
     assert "Диспетчеры 5/5" in report
+    assert "🧰 Кодовые проверки" in report
+    assert "Сдача без удержания: найдено 1 из 4 запросов на сдачу" in report
+    assert "По источникам сдачи: Диспетчеры 1/4" in report
