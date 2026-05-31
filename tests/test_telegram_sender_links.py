@@ -87,3 +87,43 @@ def test_format_report_shows_ai_processing_summary_by_source():
     assert "🧰 Кодовые проверки" in report
     assert "Сдача без удержания: найдено 1 из 4 запросов на сдачу" in report
     assert "По источникам сдачи: Диспетчеры 1/4" in report
+
+
+def test_format_report_problem_card_is_compact():
+    period = {
+        "report_start_msk": datetime(2026, 5, 30, 0, 0, tzinfo=MoscowTZ),
+        "report_end_msk": datetime(2026, 5, 30, 19, 0, tzinfo=MoscowTZ),
+    }
+    issue = {
+        "conversation_id": "6129",
+        "employee": "Глумов Дмитрий",
+        "chat_type": "Диспетчеры",
+        "source": "telegram",
+        "chat_id": "15",
+        "dialog_link": "https://web.stax.ru/react/telegram/chat/15/6129",
+        "first_client_msg": "У меня стоит блок на неизвестные номера",
+        "topic": "Оплата / аренда",
+        "problems": [{
+            "category": "КОНФЛИКТ",
+            "severity": "высокая",
+            "priority": "P1",
+            "client_quote": "У меня стоит блок на неизвестные номера, не сможет дозвониться. Пусть напишет на вотс ап",
+            "employee_quote": "+7 969 131 01 30 наберите ему самостоятельно пожалуйста",
+            "description": (
+                "Сотрудник повторно предложил клиенту самостоятельно позвонить водителю. "
+                "Цитата сотрудника: «+7 969 131 01 30 наберите ему самостоятельно пожалуйста» "
+                "Реакция на: «У меня стоит блок на неизвестные номера»"
+            ),
+        }],
+    }
+
+    report = format_report([issue], 1, period, "ok", [], {})
+
+    assert "Клиент:" in report
+    assert "Сотрудник:" in report
+    assert "Что не так:" in report
+    assert report.index("Клиент:") < report.index("Сотрудник:") < report.index("Что не так:")
+    assert "Цитата сотрудника:" not in report
+    assert "Реакция на:" not in report
+    assert "Искать:" in report
+    assert "Тема: Оплата / аренда" in report
