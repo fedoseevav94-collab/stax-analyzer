@@ -4,6 +4,7 @@ STAX AI QA Monitor — точка входа.
 - 20:00 МСК: основной анализ текущего дня 00:00-19:00.
 - 02:00 МСК: ночной добор того же дня до полуночи.
 """
+import os
 import sys
 
 from app import config
@@ -68,7 +69,7 @@ def dedup_and_record(conn, all_issues: list) -> tuple[list, int]:
 def run() -> None:
     config.validate()
 
-    period = get_period_timestamps()
+    period = get_period_timestamps(schedule_cron=os.getenv("GITHUB_EVENT_SCHEDULE"))
     logger.info("=" * 60)
     logger.info("STAX Analyzer запущен")
     logger.info(f"Период МСК: {period['report_start_msk']} → {period['report_end_msk']}")
