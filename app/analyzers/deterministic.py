@@ -170,6 +170,12 @@ def _first_client_return_request(messages: list) -> tuple[int, str] | tuple[None
     return None, ""
 
 
+def has_return_request(conv: dict) -> bool:
+    messages = conv.get("messages", [])
+    client_index, _ = _first_client_return_request(messages)
+    return client_index is not None
+
+
 def _is_bot_employee(conv: dict) -> bool:
     return (conv.get("employee") or "").strip().lower() in BOT_EMPLOYEES
 

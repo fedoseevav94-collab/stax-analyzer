@@ -46,6 +46,22 @@ def is_substantive_client_message(text: str) -> bool:
     if t.startswith("/"):
         return False
 
+    attachment_ext_pattern = r"\.(pdf|jpg|jpeg|png|heic|webp|doc|docx|xls|xlsx|zip|rar|mp4|mov|mp3|m4a|ogg)\b"
+    attachment_name_pattern = (
+        r"[\wа-яё ._()\-]+"
+        r"\.(pdf|jpg|jpeg|png|heic|webp|doc|docx|xls|xlsx|zip|rar|mp4|mov|mp3|m4a|ogg)"
+    )
+    attachment_context_words = (
+        "посмотрите", "проверьте", "проверь", "отправил", "отправила",
+        "скинул", "скинула", "прикрепил", "прикрепила", "вот",
+    )
+    if re.search(attachment_ext_pattern, t, flags=re.IGNORECASE) and any(
+        word in t for word in attachment_context_words
+    ):
+        return True
+    if re.fullmatch(attachment_name_pattern, t, flags=re.IGNORECASE):
+        return False
+
     if len(t) <= 40:
         t_clean = re.sub(r"[^а-я ]", "", t).strip()
         closing_words = (

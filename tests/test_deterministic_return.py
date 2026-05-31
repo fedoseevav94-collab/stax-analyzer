@@ -1,4 +1,4 @@
-from app.analyzers.deterministic import check_return_without_retention
+from app.analyzers.deterministic import check_return_without_retention, has_return_request
 from app.analyzers.episodes import prepare_messages
 
 
@@ -32,6 +32,15 @@ def test_return_without_retention_skips_when_employee_asks_reason():
     ]))
 
     assert issue is None
+
+
+def test_has_return_request_detects_request_even_when_employee_handles_it():
+    conv = _conv([
+        {"role": "client", "text": "Можно сдать авто завтра?"},
+        {"role": "employee", "text": "Подскажите, пожалуйста, причину сдачи?"},
+    ])
+
+    assert has_return_request(conv) is True
 
 
 def test_return_without_retention_skips_dtp_clarification():

@@ -249,37 +249,68 @@ def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
     skipped_done = int(analysis_stats.get("ai_skipped_already_processed") or 0)
     skipped_low = int(analysis_stats.get("ai_skipped_low_priority") or 0)
     errors = int(analysis_stats.get("ai_errors") or 0)
+    return_checked = int(analysis_stats.get("return_requests_checked") or 0)
+    return_found = int(analysis_stats.get("return_without_retention_found") or 0)
 
-    if not any((candidates, skipped_filter, skipped_done, skipped_low, errors)):
+    has_ai_stats = any((candidates, skipped_filter, skipped_done, skipped_low, errors))
+    has_return_stats = bool(return_checked or return_found)
+    if not has_ai_stats and not has_return_stats:
         return []
 
-    lines = [
-        "🤖 AI-проверка",
-        f"Кандидатов обработано: {processed}/{candidates}",
-    ]
-    if skipped_filter:
-        lines.append(f"Пропущено фильтром: {skipped_filter}")
-    if skipped_done:
-        lines.append(f"Уже обработано ранее: {skipped_done}")
-    if skipped_low:
-        lines.append(f"Пропущено из-за лимитов: {skipped_low}")
-    if errors:
-        lines.append(f"AI ошибок: {errors}")
+    lines = []
+    if has_ai_stats:
+        lines += [
+            "🤖 AI-проверка",
+            f"Кандидатов обработано: {processed}/{candidates}",
+        ]
+        if skipped_filter:
+            lines.append(f"Пропущено фильтром: {skipped_filter}")
+        if skipped_done:
+            lines.append(f"Уже обработано ранее: {skipped_done}")
+        if skipped_low:
+            lines.append(f"Пропущено из-за лимитов: {skipped_low}")
+        if errors:
+            lines.append(f"AI ошибок: {errors}")
 
-    by_source: dict[str, dict[str, int]] = {}
-    for row in analysis_stats.get("source_breakdown", []) or []:
-        name = _source_name(row.get("source_name"))
-        sent = int(row.get("sent_to_ai") or 0)
-        done = int(row.get("ai_processed") or 0)
-        if not sent and not done:
-            continue
-        current = by_source.setdefault(name, {"sent": 0, "done": 0})
-        current["sent"] += sent
-        current["done"] += done
+        by_source: dict[str, dict[str, int]] = {}
+        for row in analysis_stats.get("source_breakdown", []) or []:
+            name = _source_name(row.get("source_name"))
+            sent = int(row.get("sent_to_ai") or 0)
+            done = int(row.get("ai_processed") or 0)
+            if not sent and not done:
+                continue
+            current = by_source.setdefault(name, {"sent": 0, "done": 0})
+            current["sent"] += sent
+            current["done"] += done
 
-    if by_source:
-        parts = [f"{name} {counts['done']}/{counts['sent']}" for name, counts in by_source.items()]
-        lines.append(f"По источникам AI: {', '.join(parts)}")
+        if by_source:
+            parts = [f"{name} {counts['done']}/{counts['sent']}" for name, counts in by_source.items()]
+            lines.append(f"По источникам AI: {', '.join(parts)}")
+
+    if has_return_stats:
+        if lines:
+            lines.append("")
+        lines += [
+            "🧰 Кодовые проверки",
+            f"Сдача без удержания: найдено {return_found} из {return_checked} запросов на сдачу",
+        ]
+        return_by_source: dict[str, dict[str, int]] = {}
+        for row in analysis_stats.get("source_breakdown", []) or []:
+            checked = int(row.get("return_requests_checked") or 0)
+            found = int(row.get("return_without_retention_found") or 0)
+            if not checked and not found:
+                continue
+            name = _source_name(row.get("source_name"))
+            current = return_by_source.setdefault(name, {"checked": 0, "found": 0})
+            current["checked"] += checked
+            current["found"] += found
+
+        if return_by_source:
+            parts = [
+                f"{name} {counts['found']}/{counts['checked']}"
+                for name, counts in return_by_source.items()
+            ]
+            lines.append(f"По источникам сдачи: {', '.join(parts)}")
 
     return lines
 

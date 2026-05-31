@@ -148,6 +148,22 @@ def _employee_quote_shows_conflict(employee_quote: str) -> bool:
     return False
 
 
+def _client_quote_is_external_claim(client_quote: str) -> bool:
+    """
+    Клиентская фраза со ссылкой на внешние источники не доказывает ошибку сотрудника.
+    Для НЕКОМПЕТЕНТНОСТЬ нужна опора внутри самого диалога, а не "где-то написано".
+    """
+    text = clean_text(client_quote).lower().replace("ё", "е")
+    external_markers = (
+        "в интернете", "на сайте", "на вашем сайте", "у вас написано",
+        "где-то написано", "где то написано", "написано что", "прочитал",
+        "прочитала", "читал", "читала", "нашел", "нашла", "гугл",
+        "яндекс", "мне сказали", "сказали что", "говорили что",
+        "вроде написано", "кажется написано", "по информации",
+    )
+    return any(marker in text for marker in external_markers)
+
+
 def _validate_problem(problem: dict, conv: dict) -> dict | None:
     """
     Финальная валидация AI-проблемы:
@@ -228,6 +244,12 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
         )
         if not any(marker in reasoning_norm for marker in contradiction_markers):
             logger.info(f"[SKIP WEAK_REASON] {conv['conversation_id']} НЕКОМПЕТЕНТНОСТЬ: нет явного противоречия")
+            return None
+        if _client_quote_is_external_claim(client_quote):
+            logger.info(
+                f"[SKIP EXTERNAL_CLAIM] {conv['conversation_id']} "
+                "НЕКОМПЕТЕНТНОСТЬ: клиентская цитата ссылается на внешний источник"
+            )
             return None
         if employee_index == client_index or not _same_episode(employee_message, client_message):
             logger.info(f"[SKIP DIFF_EPISODE] {conv['conversation_id']} НЕКОМПЕТЕНТНОСТЬ: цитаты из разных эпизодов")

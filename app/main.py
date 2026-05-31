@@ -93,6 +93,8 @@ def run() -> None:
         "ai_errors": 0,
         "ai_rate_limited": False,
         "ai_skipped_already_processed": 0,
+        "return_requests_checked": 0,
+        "return_without_retention_found": 0,
         "source_breakdown": [],
     }
     ai_processed_records: list[dict] = []
@@ -101,7 +103,8 @@ def run() -> None:
         for key in (
             "loaded", "sent_to_ai", "skipped_by_filter", "ai_candidates",
             "ai_processed", "ai_skipped_low_priority", "ai_errors",
-            "ai_skipped_already_processed",
+            "ai_skipped_already_processed", "return_requests_checked",
+            "return_without_retention_found",
         ):
             analysis_totals[key] += int(stats.get(key) or 0)
         analysis_totals["ai_rate_limited"] = (
@@ -115,6 +118,8 @@ def run() -> None:
                 "ai_processed": int(stats.get("ai_processed") or 0),
                 "skipped_by_filter": int(stats.get("skipped_by_filter") or 0),
                 "ai_skipped_already_processed": int(stats.get("ai_skipped_already_processed") or 0),
+                "return_requests_checked": int(stats.get("return_requests_checked") or 0),
+                "return_without_retention_found": int(stats.get("return_without_retention_found") or 0),
             })
 
     def processed_keys_for(source: str, source_scope: str) -> set[tuple[str, str]]:

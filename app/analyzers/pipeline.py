@@ -9,6 +9,7 @@ from app.analyzers.deterministic import (
     check_return_without_retention,
     has_client_message,
     has_employee_reply,
+    has_return_request,
 )
 from app.analyzers.ai_analyzer import analyze_with_ai
 from app.analyzers.episodes import conversation_last_message_key, prepare_messages
@@ -231,6 +232,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
     ai_candidates: list = []
     skipped_by_filter = 0
     skipped_already_processed = 0
+    return_requests_checked = 0
+    return_without_retention_found = 0
     skip_ai_conversation_keys = skip_ai_conversation_keys or set()
 
     # Боты — не анализируем через AI
@@ -251,8 +254,11 @@ def analyze_source(conversations: list, chat_type: str, source: str,
             if no_greeting_issue:
                 all_issues.append(no_greeting_issue)
 
+            if has_return_request(conv):
+                return_requests_checked += 1
             return_without_retention_issue = check_return_without_retention(conv)
             if return_without_retention_issue:
+                return_without_retention_found += 1
                 all_issues.append(return_without_retention_issue)
 
             should_send, priority, reason = _ai_filter_decision(conv)
@@ -290,6 +296,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         "ai_rate_limited": ai_stats["rate_limited"],
         "ai_skipped_already_processed": skipped_already_processed,
         "ai_processed_keys": ai_stats.get("processed_keys", []),
+        "return_requests_checked": return_requests_checked,
+        "return_without_retention_found": return_without_retention_found,
     }
 
     if source == "wazzup":
@@ -299,6 +307,10 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         logger.info(f"Отправлено в AI: {stats['sent_to_ai']}")
         logger.info(f"Пропущено фильтром: {stats['skipped_by_filter']}")
         logger.info(f"Пропущено как уже обработанные AI: {stats['ai_skipped_already_processed']}")
+        logger.info(
+            "Проверка сдачи без удержания: "
+            f"{stats['return_without_retention_found']}/{stats['return_requests_checked']}"
+        )
         logger.info(f"Проблем: {stats['problems']}")
     else:
         logger.info(f"Источник: {chat_type}")
@@ -307,6 +319,10 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         logger.info(f"Отправлено в AI: {stats['sent_to_ai']}")
         logger.info(f"Пропущено фильтром: {stats['skipped_by_filter']}")
         logger.info(f"Пропущено как уже обработанные AI: {stats['ai_skipped_already_processed']}")
+        logger.info(
+            "Проверка сдачи без удержания: "
+            f"{stats['return_without_retention_found']}/{stats['return_requests_checked']}"
+        )
         logger.info(f"Найдено проблем: {stats['problems']}")
         logger.info(f"AI ошибок: {stats['ai_errors']}")
 
