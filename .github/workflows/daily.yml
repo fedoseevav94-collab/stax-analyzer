@@ -7,6 +7,12 @@ on:
     # 02:00 МСК = 23:00 UTC, ночной добор диалогов за тот же день
     - cron: '0 23 * * *'
   workflow_dispatch:
+    inputs:
+      full_ai_scan:
+        description: "Полный ручной AI-прогон: отправить все подходящие диалоги в AI и обойти AI-cache"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   analyze:
@@ -39,3 +45,5 @@ jobs:
           WAZZUP_FRONTEND_BASE_URL: ${{ secrets.WAZZUP_FRONTEND_BASE_URL }}
           CLIENT_APP_FRONTEND_BASE_URL: ${{ secrets.CLIENT_APP_FRONTEND_BASE_URL }}
           GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
+          AI_FULL_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.full_ai_scan || 'false' }}
+          AI_IGNORE_PROCESSED_CACHE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_ai_scan || 'false' }}
