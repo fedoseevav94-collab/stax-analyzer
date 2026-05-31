@@ -207,7 +207,8 @@ def _merge_issues_by_conversation(issues: list) -> list:
 
 def analyze_source(conversations: list, chat_type: str, source: str,
                    chat_id: str = "", channel_id: str = "",
-                   skip_ai_conversation_keys: set[tuple[str, str]] | None = None) -> tuple[list, int, dict]:
+                   skip_ai_conversation_keys: set[tuple[str, str]] | None = None,
+                   force_ai_scan: bool = False) -> tuple[list, int, dict]:
     """
     Возвращает (issues, total_dialogs_count, analysis_stats).
     """
@@ -261,7 +262,10 @@ def analyze_source(conversations: list, chat_type: str, source: str,
                 return_without_retention_found += 1
                 all_issues.append(return_without_retention_issue)
 
-            should_send, priority, reason = _ai_filter_decision(conv)
+            if force_ai_scan:
+                should_send, priority, reason = True, "P1", "полный ручной AI-прогон"
+            else:
+                should_send, priority, reason = _ai_filter_decision(conv)
             if should_send:
                 processed_key = (conv["conversation_id"], conv.get("last_message_key", ""))
                 if processed_key in skip_ai_conversation_keys:
@@ -298,6 +302,7 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         "ai_processed_keys": ai_stats.get("processed_keys", []),
         "return_requests_checked": return_requests_checked,
         "return_without_retention_found": return_without_retention_found,
+        "full_ai_scan": force_ai_scan,
     }
 
     if source == "wazzup":

@@ -33,6 +33,13 @@ except Exception:
     pass
 
 
+TRUE_ENV_VALUES = {"1", "true", "yes", "y", "on", "да"}
+
+
+def _env_flag(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in TRUE_ENV_VALUES
+
+
 def dedup_and_record(conn, all_issues: list) -> tuple[list, int]:
     """Дедуплицируем через PostgreSQL, записываем каждую проблему."""
     fresh_issues = []
@@ -70,10 +77,16 @@ def run() -> None:
     config.validate()
 
     period = get_period_timestamps(schedule_cron=os.getenv("GITHUB_EVENT_SCHEDULE"))
+    full_ai_scan = _env_flag("AI_FULL_SCAN")
+    ignore_ai_cache = _env_flag("AI_IGNORE_PROCESSED_CACHE") or full_ai_scan
     logger.info("=" * 60)
     logger.info("STAX Analyzer запущен")
     logger.info(f"Период МСК: {period['report_start_msk']} → {period['report_end_msk']}")
     logger.info(f"Режим периода: {period.get('period_mode')} / дата анализа: {period.get('analysis_date')}")
+    if full_ai_scan:
+        logger.info("AI режим: полный ручной прогон, предфильтр отключён")
+    if ignore_ai_cache:
+        logger.info("AI cache: отключён для этого запуска")
     logger.info(f"Confidence threshold: {CONFIDENCE_THRESHOLD}, Dedup window: {DEDUP_WINDOW_DAYS}д")
 
     conn = get_connection()
@@ -95,6 +108,8 @@ def run() -> None:
         "ai_skipped_already_processed": 0,
         "return_requests_checked": 0,
         "return_without_retention_found": 0,
+        "full_ai_scan": full_ai_scan,
+        "ignore_ai_cache": ignore_ai_cache,
         "source_breakdown": [],
     }
     ai_processed_records: list[dict] = []
@@ -124,6 +139,8 @@ def run() -> None:
 
     def processed_keys_for(source: str, source_scope: str) -> set[tuple[str, str]]:
         nonlocal conn
+        if ignore_ai_cache:
+            return set()
         try:
             return get_ai_processed_conversation_keys(conn, period["analysis_date"], source, source_scope)
         except Exception as exc:
@@ -168,7 +185,8 @@ def run() -> None:
             skip_keys = processed_keys_for("telegram", source_scope)
             issues, dc, source_stats = analyze_source(convs, chat_type=chat_type, source="telegram",
                                                       chat_id=cfg["chat_id"],
-                                                      skip_ai_conversation_keys=skip_keys)
+                                                      skip_ai_conversation_keys=skip_keys,
+                                                      force_ai_scan=full_ai_scan)
             merge_analysis_stats(source_stats)
             collect_processed_records("telegram", source_scope, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
@@ -188,6 +206,7 @@ def run() -> None:
             chat_type="Клиентское приложение",
             source="client_app",
             skip_ai_conversation_keys=skip_keys,
+            force_ai_scan=full_ai_scan,
         )
         merge_analysis_stats(source_stats)
         collect_processed_records("client_app", source_scope, source_stats)
@@ -217,7 +236,8 @@ def run() -> None:
             skip_keys = processed_keys_for("wazzup", channel_id)
             issues, dc, source_stats = analyze_source(convs, chat_type=f"Wazzup: {channel_title}",
                                                       source="wazzup", channel_id=channel_id,
-                                                      skip_ai_conversation_keys=skip_keys)
+                                                      skip_ai_conversation_keys=skip_keys,
+                                                      force_ai_scan=full_ai_scan)
             merge_analysis_stats(source_stats)
             collect_processed_records("wazzup", channel_id, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")

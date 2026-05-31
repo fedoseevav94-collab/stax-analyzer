@@ -89,6 +89,22 @@ def test_format_report_shows_ai_processing_summary_by_source():
     assert "По источникам сдачи: Диспетчеры 1/4" in report
 
 
+def test_format_report_shows_full_ai_scan_mode():
+    period = {
+        "report_start_msk": datetime(2026, 5, 29, 0, 0, tzinfo=MoscowTZ),
+        "report_end_msk": datetime(2026, 5, 29, 19, 0, tzinfo=MoscowTZ),
+    }
+    analysis_stats = {
+        "ai_candidates": 44,
+        "ai_processed": 44,
+        "full_ai_scan": True,
+    }
+
+    report = format_report([], 0, period, "ok", [], analysis_stats)
+
+    assert "Режим: полный ручной прогон" in report
+
+
 def test_format_report_problem_card_is_compact():
     period = {
         "report_start_msk": datetime(2026, 5, 30, 0, 0, tzinfo=MoscowTZ),
