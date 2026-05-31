@@ -35,3 +35,27 @@ def test_manual_main_run_before_planned_end_does_not_request_future_data():
 
     assert period["period_mode"] == "main"
     assert period["report_end_msk"] == datetime(2026, 5, 27, 12, 30, tzinfo=MoscowTZ)
+
+
+def test_delayed_retry_schedule_still_checks_previous_analysis_day():
+    period = get_period_timestamps(
+        datetime(2026, 5, 31, 12, 38, tzinfo=MoscowTZ),
+        schedule_cron="0 23 * * *",
+    )
+
+    assert period["period_mode"] == "retry"
+    assert period["analysis_date"] == date(2026, 5, 30)
+    assert period["report_start_msk"] == datetime(2026, 5, 30, 0, 0, tzinfo=MoscowTZ)
+    assert period["report_end_msk"] == datetime(2026, 5, 31, 0, 0, tzinfo=MoscowTZ)
+
+
+def test_delayed_main_schedule_before_evening_still_checks_previous_day():
+    period = get_period_timestamps(
+        datetime(2026, 5, 31, 12, 38, tzinfo=MoscowTZ),
+        schedule_cron="0 17 * * *",
+    )
+
+    assert period["period_mode"] == "main"
+    assert period["analysis_date"] == date(2026, 5, 30)
+    assert period["report_start_msk"] == datetime(2026, 5, 30, 0, 0, tzinfo=MoscowTZ)
+    assert period["report_end_msk"] == datetime(2026, 5, 30, 19, 0, tzinfo=MoscowTZ)

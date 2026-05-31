@@ -38,3 +38,4 @@ jobs:
           AI_BATCH_DELAY_SECONDS: ${{ secrets.AI_BATCH_DELAY_SECONDS }}
           WAZZUP_FRONTEND_BASE_URL: ${{ secrets.WAZZUP_FRONTEND_BASE_URL }}
           CLIENT_APP_FRONTEND_BASE_URL: ${{ secrets.CLIENT_APP_FRONTEND_BASE_URL }}
+          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
