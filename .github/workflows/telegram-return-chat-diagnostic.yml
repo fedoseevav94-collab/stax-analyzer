@@ -1,0 +1,34 @@
+name: Telegram Return Chat Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      return_tasks_chat_id:
+        description: Telegram chat id for STAX return tasks
+        required: true
+        default: "-1002393474582"
+      updates_limit:
+        description: Number of pending Telegram updates to inspect
+        required: true
+        default: "100"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests==2.32.3
+
+      - name: Check return tasks chat visibility
+        run: python -m app.tools.telegram_return_chat_diagnostic
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          RETURN_TASKS_CHAT_ID: ${{ inputs.return_tasks_chat_id }}
+          TELEGRAM_UPDATES_LIMIT: ${{ inputs.updates_limit }}
