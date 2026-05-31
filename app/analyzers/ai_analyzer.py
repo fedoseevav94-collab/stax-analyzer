@@ -164,6 +164,19 @@ def _client_quote_is_external_claim(client_quote: str) -> bool:
     return any(marker in text for marker in external_markers)
 
 
+def _employee_quote_is_technical_dismissal(employee_quote: str) -> bool:
+    """
+    В STAX "уволить водителя" в переписке диспетчеров означает техническое
+    действие в программе, а не угрозу клиенту/водителю.
+    """
+    text = clean_text(employee_quote).lower().replace("ё", "е")
+    dismissal_markers = (
+        "уволить", "уволим", "уволили", "уволь", "уволен",
+        "уволена", "увольнение", "увольнения",
+    )
+    return any(marker in text for marker in dismissal_markers)
+
+
 def _validate_problem(problem: dict, conv: dict) -> dict | None:
     """
     Финальная валидация AI-проблемы:
@@ -200,6 +213,13 @@ def _validate_problem(problem: dict, conv: dict) -> dict | None:
         logger.info(
             f"[SKIP BAD_INDEX] {conv['conversation_id']} {category}: "
             f"employee_quote не найден в #{employee_index}"
+        )
+        return None
+
+    if category in {"ГРУБОСТЬ", "КОНФЛИКТ"} and _employee_quote_is_technical_dismissal(emp_quote):
+        logger.info(
+            f"[SKIP TECH_DISMISSAL] {conv['conversation_id']} {category}: "
+            "увольнение в STAX трактуется как техническое действие в программе"
         )
         return None
 

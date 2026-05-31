@@ -10,9 +10,18 @@ CLIENT_GREETINGS = (
 )
 EMPLOYEE_GREETINGS = (
     "здравствуйте", "добрый день", "добрый вечер", "доброе утро",
-    "привет", "здравствуй",
+    "привет", "здравствуй", "доброго дня", "доброго вечера",
 )
 BOT_EMPLOYEES = {"stax система", "stax system"}
+EMPLOYEE_REPLY_MEDIA_TYPES = {
+    "audio", "voice", "video", "video_note", "photo", "image", "document",
+    "file", "attachment", "sticker",
+}
+EMPLOYEE_REPLY_ATTACHMENT_FIELDS = (
+    "audio", "voice", "video", "video_note", "photo", "image", "document",
+    "file", "files", "attachments", "attachment", "media", "media_url",
+    "file_url", "url",
+)
 RETURN_REQUEST_MARKERS = (
     "записаться на сдачу", "запишите на сдачу", "записать на сдачу",
     "хочу сдать", "буду сдавать", "еду на сдачу", "поеду на сдачу",
@@ -52,8 +61,25 @@ RETENTION_OR_CLARIFICATION_MARKERS = (
 )
 
 
+def _has_value(value) -> bool:
+    return value not in (None, "", [], {})
+
+
+def _message_has_employee_reply_content(message: dict) -> bool:
+    if message.get("role") != "employee":
+        return False
+    if clean_text(message.get("text")) or clean_text(message.get("caption")):
+        return True
+
+    for field in ("type", "message_type", "content_type", "media_type", "kind"):
+        if clean_text(message.get(field)).lower() in EMPLOYEE_REPLY_MEDIA_TYPES:
+            return True
+
+    return any(_has_value(message.get(field)) for field in EMPLOYEE_REPLY_ATTACHMENT_FIELDS)
+
+
 def has_employee_reply(messages: list) -> bool:
-    return any(m.get("role") == "employee" and clean_text(m.get("text")) for m in messages)
+    return any(_message_has_employee_reply_content(m) for m in messages)
 
 
 def has_client_message(messages: list) -> bool:
@@ -139,6 +165,18 @@ def _message_index(message: dict | None) -> int | None:
         return None
 
 
+def _message_ts(message: dict | None) -> int | None:
+    if not message:
+        return None
+    value = message.get("created_ts")
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _has_any(text: str, phrases: tuple[str, ...]) -> bool:
     normalized = _norm(text)
     return any(phrase in normalized for phrase in phrases)
@@ -158,6 +196,39 @@ def _first_employee_reply_after(messages: list, start_index: int, episode_id=Non
         if message.get("role") == "employee" and clean_text(message.get("text")):
             return message
     return None
+
+
+def _employee_opening_replies_after(
+    messages: list,
+    start_index: int,
+    episode_id=None,
+    max_replies: int = 3,
+    max_seconds: int = 5 * 60,
+) -> list[dict]:
+    replies = []
+    first_reply_ts = None
+    for message in messages[start_index + 1:]:
+        if episode_id is not None and message.get("episode_id") != episode_id:
+            break
+        if not clean_text(message.get("text")):
+            continue
+        if message.get("role") == "client":
+            if replies:
+                break
+            continue
+        if message.get("role") != "employee":
+            continue
+
+        current_ts = _message_ts(message)
+        if replies and first_reply_ts is not None and current_ts is not None:
+            if abs(current_ts - first_reply_ts) > max_seconds:
+                break
+        if not replies:
+            first_reply_ts = current_ts
+        replies.append(message)
+        if len(replies) >= max_replies:
+            break
+    return replies
 
 
 def _first_client_return_request(messages: list) -> tuple[int, str] | tuple[None, str]:
@@ -223,13 +294,15 @@ def check_no_greeting(conv: dict) -> dict | None:
     if not _has_any(first_client_msg, CLIENT_GREETINGS):
         return None
 
-    first_employee_reply = _first_employee_reply_after(messages, first_index, first_message.get("episode_id"))
-    if not first_employee_reply:
+    opening_replies = _employee_opening_replies_after(messages, first_index, first_message.get("episode_id"))
+    if not opening_replies:
         return None
 
-    employee_quote = clean_text(first_employee_reply.get("text"))
-    if _has_any(employee_quote, EMPLOYEE_GREETINGS):
+    if any(_has_any(clean_text(reply.get("text")), EMPLOYEE_GREETINGS) for reply in opening_replies):
         return None
+
+    first_employee_reply = opening_replies[0]
+    employee_quote = clean_text(first_employee_reply.get("text"))
 
     logger.info(f"[БЕЗ_ПРИВЕТСТВИЯ] {conv['conversation_id']}")
     return _issue(conv, [_problem(

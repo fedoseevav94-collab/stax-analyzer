@@ -2,6 +2,7 @@
 Telegram: форматирование и отправка отчёта.
 """
 import time
+import re
 from collections import Counter
 from datetime import datetime
 
@@ -82,6 +83,14 @@ def _shorten(text: str, limit: int) -> str:
     return text
 
 
+def _first_sentence(text: str) -> str:
+    text = clean_text(text)
+    match = re.search(r"(?<=[.!?])\s+", text)
+    if match:
+        return text[:match.start() + 1]
+    return text
+
+
 def _quote(text: str, limit: int = 220) -> str:
     text = _shorten(text, limit)
     if not text:
@@ -104,7 +113,7 @@ def _risk_text(problem: dict) -> str:
         "СДАЧА_БЕЗ_УДЕРЖАНИЯ": "Водителя записывают на сдачу без уточнения причины и попытки предложить решение.",
     }
     fallback = fallback_by_category.get(normalize_category(problem.get("category")), "Проблема требует проверки руководителем.")
-    return _shorten(text.strip(" .;—-") or fallback, 180)
+    return _shorten(_first_sentence(text.strip(" .;—-") or fallback), 150)
 
 
 def _search_quote(problem: dict) -> str:
@@ -204,19 +213,22 @@ def _format_problem_card(row: dict, idx: int) -> list[str]:
     if emp and emp != "Без ответа":
         header += f" — {emp}"
 
-    lines = ["", header, f"⚠️ Риск: {risk}"]
+    lines = ["", header]
     if client_quote:
-        lines.append(f"🙋 Клиент: {_quote(client_quote, 220)}")
+        lines.append(f"Клиент: {_quote(client_quote, 170)}")
     if employee_quote:
-        lines.append(f"👤 Сотрудник: {_quote(employee_quote, 220)}")
+        lines.append(f"Сотрудник: {_quote(employee_quote, 170)}")
+    elif row["category"] == "БЕЗ_ОТВЕТА":
+        lines.append("Сотрудник: ответа нет")
+    lines.append(f"Что не так: {risk}")
     if search_quote:
-        lines.append(f"🔎 Искать: {search_quote}")
+        lines.append(f"Искать: {search_quote}")
     if topic and topic != "Другое":
-        lines.append(f"🏷️ Тема: {topic}")
+        lines.append(f"Тема: {topic}")
     if conv_id:
-        lines.append(f"🆔 ID: {conv_id}")
+        lines.append(f"ID: {conv_id}")
     if link:
-        lines.append(f"🔗 {_message_link_label(issue, problem)}: {link}")
+        lines.append(f"{_message_link_label(issue, problem)}: {link}")
     return lines
 
 
@@ -251,8 +263,9 @@ def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
     errors = int(analysis_stats.get("ai_errors") or 0)
     return_checked = int(analysis_stats.get("return_requests_checked") or 0)
     return_found = int(analysis_stats.get("return_without_retention_found") or 0)
+    full_ai_scan = bool(analysis_stats.get("full_ai_scan"))
 
-    has_ai_stats = any((candidates, skipped_filter, skipped_done, skipped_low, errors))
+    has_ai_stats = any((candidates, skipped_filter, skipped_done, skipped_low, errors, full_ai_scan))
     has_return_stats = bool(return_checked or return_found)
     if not has_ai_stats and not has_return_stats:
         return []
@@ -263,6 +276,8 @@ def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
             "🤖 AI-проверка",
             f"Кандидатов обработано: {processed}/{candidates}",
         ]
+        if full_ai_scan:
+            lines.append("Режим: полный ручной прогон")
         if skipped_filter:
             lines.append(f"Пропущено фильтром: {skipped_filter}")
         if skipped_done:

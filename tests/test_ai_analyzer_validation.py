@@ -112,6 +112,42 @@ def test_conflict_with_helpful_reply_is_rejected():
     assert _validate_problem(problem, conv) is None
 
 
+def test_rudeness_about_technical_dismissal_is_rejected():
+    conv = _conv([
+        _message("client", "Здравствуйте", 1),
+        _message("employee", "как выведите - нам напишите, пожалуйста, чтобы мы вас уволили", 2),
+    ])
+    problem = _problem(
+        "ГРУБОСТЬ",
+        "как выведите - нам напишите, пожалуйста, чтобы мы вас уволили",
+        2,
+        client_quote="Здравствуйте",
+        client_index=1,
+        reasoning="Сотрудник угрожает уволить клиента",
+        severity="высокая",
+    )
+
+    assert _validate_problem(problem, conv) is None
+
+
+def test_conflict_about_technical_dismissal_is_rejected():
+    conv = _conv([
+        _message("client", "Когда выводить деньги?", 1),
+        _message("employee", "Напишите после вывода средств, и мы вас уволим", 2),
+    ])
+    problem = _problem(
+        "КОНФЛИКТ",
+        "Напишите после вывода средств, и мы вас уволим",
+        2,
+        client_quote="Когда выводить деньги?",
+        client_index=1,
+        reasoning="Сотрудник усиливает конфликт угрозой увольнения",
+        severity="высокая",
+    )
+
+    assert _validate_problem(problem, conv) is None
+
+
 def test_incompetence_without_client_quote_is_rejected():
     conv = _conv([_message("employee", "Это невозможно", 1)])
     problem = _problem("НЕКОМПЕТЕНТНОСТЬ", "Это невозможно", 1, client_quote="")
