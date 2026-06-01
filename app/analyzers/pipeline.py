@@ -11,6 +11,7 @@ from app.analyzers.deterministic import (
     has_employee_reply,
     has_return_request,
 )
+from app.analyzers.dispatcher_sla import analyze_dispatcher_response_sla
 from app.analyzers.ai_analyzer import analyze_with_ai
 from app.analyzers.episodes import conversation_last_message_key, prepare_messages
 from app.config import WAZZUP_FRONTEND_BASE_URL, CLIENT_APP_FRONTEND_BASE_URL
@@ -208,7 +209,8 @@ def _merge_issues_by_conversation(issues: list) -> list:
 def analyze_source(conversations: list, chat_type: str, source: str,
                    chat_id: str = "", channel_id: str = "",
                    skip_ai_conversation_keys: set[tuple[str, str]] | None = None,
-                   force_ai_scan: bool = False) -> tuple[list, int, dict]:
+                   force_ai_scan: bool = False, check_dispatcher_sla: bool = False,
+                   sla_check_until=None) -> tuple[list, int, dict]:
     """
     Возвращает (issues, total_dialogs_count, analysis_stats).
     """
@@ -228,6 +230,10 @@ def analyze_source(conversations: list, chat_type: str, source: str,
     if len(deduped) < len(normalized):
         logger.info(f"Дедуп выгрузки: {len(normalized)} → {len(deduped)} диалогов")
     logger.info(f"После дедупа: {len(deduped)}")
+
+    slow_responses = []
+    if check_dispatcher_sla and sla_check_until is not None:
+        slow_responses = analyze_dispatcher_response_sla(deduped, sla_check_until)
 
     all_issues: list = []
     ai_candidates: list = []
@@ -303,6 +309,9 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         "return_requests_checked": return_requests_checked,
         "return_without_retention_found": return_without_retention_found,
         "full_ai_scan": force_ai_scan,
+        "dispatcher_sla_checked": len(deduped) if check_dispatcher_sla else 0,
+        "dispatcher_sla_found": len(slow_responses),
+        "slow_responses": slow_responses,
     }
 
     if source == "wazzup":
@@ -316,6 +325,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
             "Проверка сдачи без удержания: "
             f"{stats['return_without_retention_found']}/{stats['return_requests_checked']}"
         )
+        if check_dispatcher_sla:
+            logger.info(f"SLA задержки ответа диспетчера: {stats['dispatcher_sla_found']}")
         logger.info(f"Проблем: {stats['problems']}")
     else:
         logger.info(f"Источник: {chat_type}")
@@ -328,6 +339,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
             "Проверка сдачи без удержания: "
             f"{stats['return_without_retention_found']}/{stats['return_requests_checked']}"
         )
+        if check_dispatcher_sla:
+            logger.info(f"SLA задержки ответа диспетчера: {stats['dispatcher_sla_found']}")
         logger.info(f"Найдено проблем: {stats['problems']}")
         logger.info(f"AI ошибок: {stats['ai_errors']}")
 

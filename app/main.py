@@ -6,9 +6,14 @@ STAX AI QA Monitor — точка входа.
 """
 import os
 import sys
+import json
 
 from app import config
 from app.ai.providers import get_stats as ai_stats
+from app.analyzers.dispatcher_sla import (
+    format_slow_responses_text_report,
+    slow_responses_json_report,
+)
 from app.analyzers.pipeline import analyze_source
 from app.config import (
     TG_ENDPOINTS, CLIENT_APP_URL, WAZZUP_MESSAGES_URL_TEMPLATE,
@@ -110,6 +115,9 @@ def run() -> None:
         "return_without_retention_found": 0,
         "full_ai_scan": full_ai_scan,
         "ignore_ai_cache": ignore_ai_cache,
+        "dispatcher_sla_checked": 0,
+        "dispatcher_sla_found": 0,
+        "slow_responses": [],
         "source_breakdown": [],
     }
     ai_processed_records: list[dict] = []
@@ -119,9 +127,11 @@ def run() -> None:
             "loaded", "sent_to_ai", "skipped_by_filter", "ai_candidates",
             "ai_processed", "ai_skipped_low_priority", "ai_errors",
             "ai_skipped_already_processed", "return_requests_checked",
-            "return_without_retention_found",
+            "return_without_retention_found", "dispatcher_sla_checked",
+            "dispatcher_sla_found",
         ):
             analysis_totals[key] += int(stats.get(key) or 0)
+        analysis_totals["slow_responses"].extend(stats.get("slow_responses") or [])
         analysis_totals["ai_rate_limited"] = (
             analysis_totals["ai_rate_limited"] or bool(stats.get("ai_rate_limited"))
         )
@@ -135,6 +145,8 @@ def run() -> None:
                 "ai_skipped_already_processed": int(stats.get("ai_skipped_already_processed") or 0),
                 "return_requests_checked": int(stats.get("return_requests_checked") or 0),
                 "return_without_retention_found": int(stats.get("return_without_retention_found") or 0),
+                "dispatcher_sla_checked": int(stats.get("dispatcher_sla_checked") or 0),
+                "dispatcher_sla_found": int(stats.get("dispatcher_sla_found") or 0),
             })
 
     def processed_keys_for(source: str, source_scope: str) -> set[tuple[str, str]]:
@@ -186,7 +198,9 @@ def run() -> None:
             issues, dc, source_stats = analyze_source(convs, chat_type=chat_type, source="telegram",
                                                       chat_id=cfg["chat_id"],
                                                       skip_ai_conversation_keys=skip_keys,
-                                                      force_ai_scan=full_ai_scan)
+                                                      force_ai_scan=full_ai_scan,
+                                                      check_dispatcher_sla=chat_type == "Диспетчеры",
+                                                      sla_check_until=period["report_end_msk"])
             merge_analysis_stats(source_stats)
             collect_processed_records("telegram", source_scope, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
@@ -290,7 +304,15 @@ def run() -> None:
     additional_report = format_additional_report(fresh_issues)
     if additional_report:
         logger.info(additional_report)
-    send_telegram_messages([report, additional_report])
+    sla_report = ""
+    if analysis_totals["dispatcher_sla_checked"]:
+        sla_report = format_slow_responses_text_report(period, analysis_totals["slow_responses"])
+        logger.info(sla_report)
+        logger.info(json.dumps(
+            slow_responses_json_report(analysis_totals["slow_responses"]),
+            ensure_ascii=False,
+        ))
+    send_telegram_messages([report, additional_report, sla_report])
     logger.info("Готово ✓")
 
 
