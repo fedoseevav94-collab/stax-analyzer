@@ -170,3 +170,25 @@ def test_pipeline_keeps_sla_separate_from_ai_issues(monkeypatch):
     assert issues == []
     assert stats["dispatcher_sla_found"] == 1
     assert stats["slow_responses"][0]["delay_minutes"] == 25
+
+
+def test_dispatcher_reply_without_timestamp_closes_waiting_without_false_no_reply():
+    conv = _conv([
+        _msg("client", "первый вопрос", _dt(31, 10, 0), 1),
+        {"role": "employee", "text": "ответ без времени", "message_index": 2},
+    ])
+
+    slow_responses = analyze_dispatcher_response_sla([conv], _dt(31, 10, 45))
+
+    assert slow_responses == []
+
+
+def test_unknown_role_is_ignored_for_sla():
+    conv = _conv([
+        _msg("unknown", "первый вопрос", _dt(31, 10, 0), 1),
+        _msg("employee", "ответ", _dt(31, 10, 45), 2),
+    ])
+
+    slow_responses = analyze_dispatcher_response_sla([conv], _dt(31, 10, 45))
+
+    assert slow_responses == []
