@@ -81,6 +81,13 @@ def init_db(conn) -> None:
             CREATE INDEX IF NOT EXISTS idx_ai_processed_dialogs_lookup
             ON ai_processed_dialogs(analysis_date, source, source_scope)
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS integration_state (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP NOT NULL
+            )
+        """)
     conn.commit()
     logger.info("БД инициализирована")
 
@@ -180,6 +187,25 @@ def record_ai_processed_dialogs(conn, analysis_date, records: list[dict]) -> Non
             ON CONFLICT (analysis_date, source, source_scope, conversation_id, last_message_key)
             DO UPDATE SET processed_at = EXCLUDED.processed_at
         """, rows)
+
+
+def get_integration_state(conn, key: str) -> str:
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM integration_state WHERE key = %s", (key,))
+        row = cur.fetchone()
+    return str(row[0]) if row and row[0] is not None else ""
+
+
+def set_integration_state(conn, key: str, value: str) -> None:
+    now = datetime.now(MoscowTZ)
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO integration_state (key, value, updated_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_at = EXCLUDED.updated_at
+        """, (key, str(value), now))
 
 
 def clean_text_or_empty(value) -> str:

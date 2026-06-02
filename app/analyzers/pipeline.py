@@ -14,6 +14,7 @@ from app.analyzers.deterministic import (
 from app.analyzers.dispatcher_sla import analyze_dispatcher_response_sla
 from app.analyzers.ai_analyzer import analyze_with_ai
 from app.analyzers.episodes import conversation_last_message_key, prepare_messages
+from app.analyzers.return_tasks import analyze_return_tasks_for_conversations
 from app.config import WAZZUP_FRONTEND_BASE_URL, CLIENT_APP_FRONTEND_BASE_URL
 from app.logger import logger
 from app.utils.text import clean_text, is_substantive_client_message
@@ -63,6 +64,22 @@ def _build_dialog_link(source: str, conv_id: str, chat_id: str = "", channel_id:
     return ""
 
 
+def _flatten_search_values(value) -> list[str]:
+    if isinstance(value, dict):
+        result = []
+        for item in value.values():
+            result.extend(_flatten_search_values(item))
+        return result
+    if isinstance(value, list):
+        result = []
+        for item in value:
+            result.extend(_flatten_search_values(item))
+        return result
+    if isinstance(value, (str, int, float)):
+        return [clean_text(value)]
+    return []
+
+
 def _normalize_conversation(conv: dict, chat_type: str, source: str,
                              chat_id: str = "", channel_id: str = "") -> dict:
     messages = prepare_messages(conv.get("messages", []) or [])
@@ -81,6 +98,7 @@ def _normalize_conversation(conv: dict, chat_type: str, source: str,
         "chat_id": chat_id,
         "channel_id": channel_id,
         "dialog_link": _build_dialog_link(source, conv_id, chat_id, channel_id),
+        "search_text": " ".join(_flatten_search_values(conv))[:5000],
         "first_client_msg": first_msg,
         "topic": detect_topic(messages),
         "last_message_key": conversation_last_message_key(messages),
@@ -190,6 +208,29 @@ def _ai_filter_decision(conv: dict) -> tuple[bool, str, str]:
 def should_send_to_ai(conv: dict) -> bool:
     send, _, _ = _ai_filter_decision(conv)
     return send
+
+
+def normalize_conversations_for_source(conversations: list, chat_type: str, source: str,
+                                       chat_id: str = "", channel_id: str = "") -> list[dict]:
+    normalized = [_normalize_conversation(c, chat_type, source, chat_id, channel_id)
+                  for c in conversations]
+
+    by_id: dict = {}
+    for c in normalized:
+        cid = c["conversation_id"]
+        if not cid:
+            continue
+        if cid not in by_id or len(c["messages"]) > len(by_id[cid]["messages"]):
+            by_id[cid] = c
+    return list(by_id.values())
+
+
+def analyze_return_tasks_for_source(conversations: list, tasks: list[dict],
+                                    chat_type: str, source: str,
+                                    chat_id: str = "", channel_id: str = "",
+                                    existing_return_issue_ids: set[str] | None = None) -> tuple[list, dict]:
+    normalized = normalize_conversations_for_source(conversations, chat_type, source, chat_id, channel_id)
+    return analyze_return_tasks_for_conversations(tasks, normalized, existing_return_issue_ids)
 
 
 def _merge_issues_by_conversation(issues: list) -> list:

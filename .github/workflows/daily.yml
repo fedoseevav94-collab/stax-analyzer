@@ -44,6 +44,8 @@ jobs:
           AI_BATCH_DELAY_SECONDS: ${{ secrets.AI_BATCH_DELAY_SECONDS }}
           WAZZUP_FRONTEND_BASE_URL: ${{ secrets.WAZZUP_FRONTEND_BASE_URL }}
           CLIENT_APP_FRONTEND_BASE_URL: ${{ secrets.CLIENT_APP_FRONTEND_BASE_URL }}
+          RETURN_TASKS_CHAT_ID: ${{ vars.RETURN_TASKS_CHAT_ID }}
+          RETURN_TASKS_UPDATES_LIMIT: ${{ vars.RETURN_TASKS_UPDATES_LIMIT }}
           GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
           AI_FULL_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.full_ai_scan || 'false' }}
           AI_IGNORE_PROCESSED_CACHE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_ai_scan || 'false' }}

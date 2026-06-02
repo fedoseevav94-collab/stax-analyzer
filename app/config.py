@@ -26,6 +26,8 @@ CLIENT_APP_FRONTEND_BASE_URL = os.environ.get("CLIENT_APP_FRONTEND_BASE_URL", ""
 CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", "").strip() or "0.9")
 DEDUP_WINDOW_DAYS = int(os.environ.get("DEDUP_WINDOW_DAYS", "").strip() or "14")
 AI_BATCH_DELAY_SECONDS = int(os.environ.get("AI_BATCH_DELAY_SECONDS", "").strip() or "20")
+RETURN_TASKS_CHAT_ID = os.environ.get("RETURN_TASKS_CHAT_ID", "").strip() or "-1002393474582"
+RETURN_TASKS_UPDATES_LIMIT = int(os.environ.get("RETURN_TASKS_UPDATES_LIMIT", "").strip() or "100")
 
 # ── API endpoints ─────────────────────────────────────────────────────────────
 TG_ENDPOINTS = {
