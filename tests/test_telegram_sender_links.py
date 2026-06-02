@@ -41,6 +41,18 @@ def test_wazzup_falls_back_to_dialog_link():
     assert _message_link_label(issue, problem) == "Диалог"
 
 
+def test_wazzup_chat_type_falls_back_to_dialog_link_without_source():
+    issue = {
+        "chat_type": "Wazzup: Основной канал",
+        "conversation_id": "abc",
+        "dialog_link": "https://example.com/wazzup/dialog",
+    }
+    problem = {"message_id": "999"}
+
+    assert build_message_link(issue, problem) == "https://example.com/wazzup/dialog"
+    assert _message_link_label(issue, problem) == "Диалог"
+
+
 def test_no_message_id_falls_back_to_dialog_link():
     issue = {
         "source": "telegram",

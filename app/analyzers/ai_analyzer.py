@@ -117,6 +117,17 @@ def _messages_are_close(employee_message: dict, client_message: dict,
 
 def _employee_quote_shows_conflict(employee_quote: str) -> bool:
     text = clean_text(employee_quote).lower().replace("ё", "е")
+    neutral_business_refusal_markers = (
+        "не можем продолжить сотрудничество",
+        "не сможем продолжить сотрудничество",
+        "не можем сотрудничать",
+        "не сможем сотрудничать",
+        "не можем предоставить автомобиль",
+        "отказано в сотрудничестве",
+    )
+    if any(marker in text for marker in neutral_business_refusal_markers):
+        return False
+
     helpful_markers = (
         "можете", "можно", "попробуйте", "по ссылке", "ссылка",
         "напишите", "пришлите", "скиньте", "уточним", "передам",

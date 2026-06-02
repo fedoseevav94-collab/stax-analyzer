@@ -192,3 +192,21 @@ def test_unknown_role_is_ignored_for_sla():
     slow_responses = analyze_dispatcher_response_sla([conv], _dt(31, 10, 45))
 
     assert slow_responses == []
+
+
+def test_ptt_voice_message_counts_as_dispatcher_reply():
+    conv = _conv([
+        _msg("client", "Нужна помощь", _dt(31, 10, 0), 1),
+        {
+            "role": "employee",
+            "text": "",
+            "message_type": "ptt",
+            "duration": 18,
+            "date": _dt(31, 10, 10),
+            "message_index": 2,
+        },
+    ])
+
+    slow_responses = analyze_dispatcher_response_sla([conv], _dt(31, 10, 30))
+
+    assert slow_responses == []

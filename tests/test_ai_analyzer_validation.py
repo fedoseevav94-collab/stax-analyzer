@@ -112,6 +112,24 @@ def test_conflict_with_helpful_reply_is_rejected():
     assert _validate_problem(problem, conv) is None
 
 
+def test_conflict_with_neutral_cooperation_refusal_is_rejected():
+    conv = _conv([
+        _message("client", "А причину не сказали?", 1),
+        _message("employee", "Увидели у вас негативный комментарий, в данный момент мы не можем продолжить сотрудничество.", 2),
+    ])
+    problem = _problem(
+        "КОНФЛИКТ",
+        "Увидели у вас негативный комментарий, в данный момент мы не можем продолжить сотрудничество.",
+        2,
+        client_quote="А причину не сказали?",
+        client_index=1,
+        reasoning="Сотрудник отказывает без объяснения",
+        severity="высокая",
+    )
+
+    assert _validate_problem(problem, conv) is None
+
+
 def test_rudeness_about_technical_dismissal_is_rejected():
     conv = _conv([
         _message("client", "Здравствуйте", 1),

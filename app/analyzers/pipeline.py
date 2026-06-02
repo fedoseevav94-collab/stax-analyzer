@@ -210,7 +210,7 @@ def analyze_source(conversations: list, chat_type: str, source: str,
                    chat_id: str = "", channel_id: str = "",
                    skip_ai_conversation_keys: set[tuple[str, str]] | None = None,
                    force_ai_scan: bool = False, check_dispatcher_sla: bool = False,
-                   sla_check_until=None) -> tuple[list, int, dict]:
+                   sla_check_until=None, no_reply_check_until=None) -> tuple[list, int, dict]:
     """
     Возвращает (issues, total_dialogs_count, analysis_stats).
     """
@@ -253,7 +253,7 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         emp = (conv.get("employee") or "").strip().lower()
         is_bot = emp in BOT_EMPLOYEES
 
-        no_reply_issue = check_no_reply(conv)
+        no_reply_issue = check_no_reply(conv, check_until=no_reply_check_until)
         if no_reply_issue:
             all_issues.append(no_reply_issue)
         elif has_employee_reply(conv["messages"]) and not is_bot:

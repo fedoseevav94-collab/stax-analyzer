@@ -1,12 +1,20 @@
 """
 Детерминированные проверки — без AI, по правилам.
 """
+from datetime import datetime
+
+from app.analyzers.dispatcher_sla import SLA_THRESHOLD_MINUTES, count_sla_minutes
+from app.config import MoscowTZ
 from app.utils.text import clean_text, is_substantive_client_message
 from app.logger import logger
 
 CLIENT_GREETINGS = (
     "здравствуйте", "добрый день", "добрый вечер", "доброе утро",
     "привет", "здрасте", "здравствуй", "hello", "hi",
+)
+CLIENT_CLOSING_MARKERS = (
+    "спасибо", "благодарю", "хорошего дня", "хорошего вечера",
+    "доброго дня", "доброго вечера", "всего доброго", "всего хорошего",
 )
 EMPLOYEE_GREETINGS = (
     "здравствуйте", "добрый день", "добрый вечер", "доброе утро",
@@ -15,12 +23,14 @@ EMPLOYEE_GREETINGS = (
 BOT_EMPLOYEES = {"stax система", "stax system"}
 EMPLOYEE_REPLY_MEDIA_TYPES = {
     "audio", "voice", "video", "video_note", "photo", "image", "document",
-    "file", "attachment", "sticker",
+    "file", "attachment", "sticker", "ptt", "voice_message", "audio_message",
+    "record", "recording",
 }
 EMPLOYEE_REPLY_ATTACHMENT_FIELDS = (
     "audio", "voice", "video", "video_note", "photo", "image", "document",
     "file", "files", "attachments", "attachment", "media", "media_url",
-    "file_url", "url",
+    "file_url", "url", "voice_url", "audio_url", "record_url", "duration",
+    "voice_duration", "audio_duration",
 )
 RETURN_REQUEST_MARKERS = (
     "записаться на сдачу", "запишите на сдачу", "записать на сдачу",
@@ -107,6 +117,13 @@ def _first_client_message_obj(messages: list) -> dict | None:
     return None
 
 
+def _first_substantive_client_message_obj(messages: list) -> dict | None:
+    for m in messages:
+        if m.get("role") == "client" and is_substantive_client_message(m.get("text")):
+            return m
+    return None
+
+
 def _problem(category: str, description: str, severity: str, priority: str,
              client_quote: str = "", employee_quote: str = "",
              confidence: float = 1.0, message_id: str = "",
@@ -177,9 +194,29 @@ def _message_ts(message: dict | None) -> int | None:
         return None
 
 
+def _message_dt(message: dict | None) -> datetime | None:
+    ts = _message_ts(message)
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, MoscowTZ)
+
+
 def _has_any(text: str, phrases: tuple[str, ...]) -> bool:
     normalized = _norm(text)
     return any(phrase in normalized for phrase in phrases)
+
+
+def _is_greeting_only_or_closing(text: str) -> bool:
+    normalized = _norm(text)
+    if not normalized:
+        return True
+    if any(marker in normalized for marker in CLIENT_CLOSING_MARKERS):
+        return True
+    without_greeting = normalized
+    for greeting in CLIENT_GREETINGS:
+        without_greeting = without_greeting.replace(greeting, " ")
+    without_greeting = " ".join(without_greeting.split())
+    return not without_greeting
 
 
 def _first_non_empty(messages: list) -> tuple[int, dict] | tuple[None, None]:
@@ -251,7 +288,7 @@ def _is_bot_employee(conv: dict) -> bool:
     return (conv.get("employee") or "").strip().lower() in BOT_EMPLOYEES
 
 
-def check_no_reply(conv: dict) -> dict | None:
+def check_no_reply(conv: dict, check_until: datetime | None = None) -> dict | None:
     """
     Возвращает issue если сотрудник не ответил на содержательное сообщение клиента.
     """
@@ -264,8 +301,19 @@ def check_no_reply(conv: dict) -> dict | None:
         logger.info(f"[SKIP БЕЗ_ОТВЕТА] {conv['conversation_id']}: только служебные/закрывающие")
         return None
 
+    first_client = _first_substantive_client_message_obj(messages)
+    if check_until and first_client:
+        client_dt = _message_dt(first_client)
+        if client_dt:
+            delay = count_sla_minutes(client_dt, check_until)
+            if delay < SLA_THRESHOLD_MINUTES:
+                logger.info(
+                    f"[SKIP БЕЗ_ОТВЕТА] {conv['conversation_id']}: "
+                    f"SLA задержка {delay} мин < {SLA_THRESHOLD_MINUTES}"
+                )
+                return None
+
     logger.info(f"[БЕЗ_ОТВЕТА] {conv['conversation_id']}")
-    first_client = _first_client_message_obj(messages)
     first_msg = clean_text(first_client.get("text"))[:160] if first_client else ""
     return _issue(conv, [_problem(
         category="БЕЗ_ОТВЕТА",
@@ -292,6 +340,9 @@ def check_no_greeting(conv: dict) -> dict | None:
 
     first_client_msg = clean_text(first_message.get("text"))
     if not _has_any(first_client_msg, CLIENT_GREETINGS):
+        return None
+    if _is_greeting_only_or_closing(first_client_msg):
+        logger.info(f"[SKIP БЕЗ_ПРИВЕТСТВИЯ] {conv['conversation_id']}: приветствие без запроса или прощание")
         return None
 
     opening_replies = _employee_opening_replies_after(messages, first_index, first_message.get("episode_id"))

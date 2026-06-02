@@ -20,12 +20,14 @@ DISPATCHER_ROLES = {"employee", "dispatcher", "operator", "диспетчер", 
 
 DISPATCHER_REPLY_MEDIA_TYPES = {
     "audio", "voice", "video", "video_note", "photo", "image", "document",
-    "file", "attachment", "sticker",
+    "file", "attachment", "sticker", "ptt", "voice_message", "audio_message",
+    "record", "recording",
 }
 DISPATCHER_REPLY_ATTACHMENT_FIELDS = (
     "audio", "voice", "video", "video_note", "photo", "image", "document",
     "file", "files", "attachments", "attachment", "media", "media_url",
-    "file_url", "url",
+    "file_url", "url", "voice_url", "audio_url", "record_url", "duration",
+    "voice_duration", "audio_duration",
 )
 
 

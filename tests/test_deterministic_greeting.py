@@ -30,3 +30,22 @@ def test_no_greeting_triggers_when_opening_employee_burst_has_no_greeting():
 
     assert issue is not None
     assert issue["problems"][0]["category"] == "БЕЗ_ПРИВЕТСТВИЯ"
+
+
+def test_no_greeting_skips_client_farewell():
+    issue = check_no_greeting(_conv([
+        {"role": "client", "text": "Спасибо, доброго дня"},
+        {"role": "employee", "text": "Спасибо и вам хорошего дня"},
+    ]))
+
+    assert issue is None
+
+
+def test_no_greeting_skips_greeting_only_before_substantive_question():
+    issue = check_no_greeting(_conv([
+        {"role": "client", "text": "Добрый день"},
+        {"role": "client", "text": "Почему не могу вывести деньги"},
+        {"role": "employee", "text": "вывод заработает после 12 часов дня, ждем поступление от Яндекс"},
+    ]))
+
+    assert issue is None

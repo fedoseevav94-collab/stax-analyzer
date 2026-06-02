@@ -200,7 +200,8 @@ def run() -> None:
                                                       skip_ai_conversation_keys=skip_keys,
                                                       force_ai_scan=full_ai_scan,
                                                       check_dispatcher_sla=chat_type == "Диспетчеры",
-                                                      sla_check_until=period["report_end_msk"])
+                                                      sla_check_until=period["report_end_msk"],
+                                                      no_reply_check_until=period["report_end_msk"])
             merge_analysis_stats(source_stats)
             collect_processed_records("telegram", source_scope, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
@@ -221,6 +222,7 @@ def run() -> None:
             source="client_app",
             skip_ai_conversation_keys=skip_keys,
             force_ai_scan=full_ai_scan,
+            no_reply_check_until=period["report_end_msk"],
         )
         merge_analysis_stats(source_stats)
         collect_processed_records("client_app", source_scope, source_stats)
@@ -251,7 +253,8 @@ def run() -> None:
             issues, dc, source_stats = analyze_source(convs, chat_type=f"Wazzup: {channel_title}",
                                                       source="wazzup", channel_id=channel_id,
                                                       skip_ai_conversation_keys=skip_keys,
-                                                      force_ai_scan=full_ai_scan)
+                                                      force_ai_scan=full_ai_scan,
+                                                      no_reply_check_until=period["report_end_msk"])
             merge_analysis_stats(source_stats)
             collect_processed_records("wazzup", channel_id, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
