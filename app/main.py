@@ -6,21 +6,29 @@ STAX AI QA Monitor — точка входа.
 """
 import os
 import sys
+import json
 
 from app import config
 from app.ai.providers import get_stats as ai_stats
-from app.analyzers.pipeline import analyze_source
+from app.analyzers.dispatcher_sla import (
+    format_slow_responses_text_report,
+    slow_responses_json_report,
+)
+from app.analyzers.pipeline import analyze_return_tasks_for_source, analyze_source
 from app.config import (
     TG_ENDPOINTS, CLIENT_APP_URL, WAZZUP_MESSAGES_URL_TEMPLATE,
     AI_FAILURE_THRESHOLD, CONFIDENCE_THRESHOLD, DEDUP_WINDOW_DAYS, MoscowTZ,
+    RETURN_TASKS_CHAT_ID, RETURN_TASKS_UPDATES_LIMIT, TELEGRAM_BOT_TOKEN,
 )
 from app.db.postgres import (
     get_connection, init_db,
     is_duplicate_problem, record_problem, update_employee_stats,
     get_weekly_top_offenders, record_run_start, record_run_finish,
     get_ai_processed_conversation_keys, record_ai_processed_dialogs,
+    get_integration_state, set_integration_state,
 )
 from app.exporters.base import fetch_conversations
+from app.exporters.telegram_return_tasks import fetch_return_tasks_from_updates
 from app.exporters.wazzup import fetch_wazzup_channels
 from app.logger import logger
 from app.telegram.sender import format_additional_report, format_report, send_telegram_messages
@@ -38,6 +46,13 @@ TRUE_ENV_VALUES = {"1", "true", "yes", "y", "on", "да"}
 
 def _env_flag(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in TRUE_ENV_VALUES
+
+
+def _optional_int(value: str):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def dedup_and_record(conn, all_issues: list) -> tuple[list, int]:
@@ -110,18 +125,50 @@ def run() -> None:
         "return_without_retention_found": 0,
         "full_ai_scan": full_ai_scan,
         "ignore_ai_cache": ignore_ai_cache,
+        "dispatcher_sla_checked": 0,
+        "dispatcher_sla_found": 0,
+        "slow_responses": [],
+        "return_task_cards_loaded": 0,
+        "return_task_cards_matched": 0,
+        "return_task_cards_unmatched": 0,
+        "return_task_retention_found": 0,
+        "return_task_updates_seen": 0,
+        "return_task_fetch_error": 0,
         "source_breakdown": [],
     }
     ai_processed_records: list[dict] = []
+    return_task_offset_key = f"telegram_return_tasks_offset:{RETURN_TASKS_CHAT_ID}"
+    return_task_next_offset = None
+    return_tasks: list[dict] = []
+
+    if RETURN_TASKS_CHAT_ID:
+        current_offset = _optional_int(get_integration_state(conn, return_task_offset_key))
+        return_tasks, return_task_next_offset, return_task_fetch_stats = fetch_return_tasks_from_updates(
+            TELEGRAM_BOT_TOKEN,
+            RETURN_TASKS_CHAT_ID,
+            current_offset,
+            RETURN_TASKS_UPDATES_LIMIT,
+            period,
+        )
+        analysis_totals["return_task_cards_loaded"] = len(return_tasks)
+        analysis_totals["return_task_updates_seen"] = int(return_task_fetch_stats.get("return_task_updates_seen") or 0)
+        analysis_totals["return_task_fetch_error"] = int(return_task_fetch_stats.get("return_task_fetch_error") or 0)
+        logger.info(
+            "Карточки сдачи из Telegram: "
+            f"{len(return_tasks)} карточек, updates={analysis_totals['return_task_updates_seen']}"
+        )
 
     def merge_analysis_stats(stats: dict) -> None:
         for key in (
             "loaded", "sent_to_ai", "skipped_by_filter", "ai_candidates",
             "ai_processed", "ai_skipped_low_priority", "ai_errors",
             "ai_skipped_already_processed", "return_requests_checked",
-            "return_without_retention_found",
+            "return_without_retention_found", "dispatcher_sla_checked",
+            "dispatcher_sla_found", "return_task_cards_matched",
+            "return_task_cards_unmatched", "return_task_retention_found",
         ):
             analysis_totals[key] += int(stats.get(key) or 0)
+        analysis_totals["slow_responses"].extend(stats.get("slow_responses") or [])
         analysis_totals["ai_rate_limited"] = (
             analysis_totals["ai_rate_limited"] or bool(stats.get("ai_rate_limited"))
         )
@@ -135,6 +182,11 @@ def run() -> None:
                 "ai_skipped_already_processed": int(stats.get("ai_skipped_already_processed") or 0),
                 "return_requests_checked": int(stats.get("return_requests_checked") or 0),
                 "return_without_retention_found": int(stats.get("return_without_retention_found") or 0),
+                "dispatcher_sla_checked": int(stats.get("dispatcher_sla_checked") or 0),
+                "dispatcher_sla_found": int(stats.get("dispatcher_sla_found") or 0),
+                "return_task_cards_matched": int(stats.get("return_task_cards_matched") or 0),
+                "return_task_cards_unmatched": int(stats.get("return_task_cards_unmatched") or 0),
+                "return_task_retention_found": int(stats.get("return_task_retention_found") or 0),
             })
 
     def processed_keys_for(source: str, source_scope: str) -> set[tuple[str, str]]:
@@ -186,7 +238,37 @@ def run() -> None:
             issues, dc, source_stats = analyze_source(convs, chat_type=chat_type, source="telegram",
                                                       chat_id=cfg["chat_id"],
                                                       skip_ai_conversation_keys=skip_keys,
-                                                      force_ai_scan=full_ai_scan)
+                                                      force_ai_scan=full_ai_scan,
+                                                      check_dispatcher_sla=chat_type == "Диспетчеры",
+                                                      sla_check_until=period["report_end_msk"],
+                                                      no_reply_check_until=period["report_end_msk"])
+            if chat_type == "Диспетчеры" and return_tasks:
+                existing_return_issue_ids = {
+                    clean_text(issue.get("conversation_id"))
+                    for issue in issues
+                    for problem in issue.get("problems", [])
+                    if normalize_category(problem.get("category")) == "СДАЧА_БЕЗ_УДЕРЖАНИЯ"
+                }
+                task_issues, task_stats = analyze_return_tasks_for_source(
+                    convs,
+                    return_tasks,
+                    chat_type=chat_type,
+                    source="telegram",
+                    chat_id=cfg["chat_id"],
+                    existing_return_issue_ids=existing_return_issue_ids,
+                )
+                if task_issues:
+                    issues.extend(task_issues)
+                    source_stats["problems"] += sum(len(i.get("problems", [])) for i in task_issues)
+                    source_stats["problem_dialogs"] += len(task_issues)
+                source_stats["return_task_cards_matched"] = int(task_stats.get("return_task_cards_matched") or 0)
+                source_stats["return_task_cards_unmatched"] = int(task_stats.get("return_task_cards_unmatched") or 0)
+                source_stats["return_task_retention_found"] = int(task_stats.get("return_task_retention_found") or 0)
+                logger.info(
+                    "Проверка задач сдачи: "
+                    f"сопоставлено {source_stats['return_task_cards_matched']}/{len(return_tasks)}, "
+                    f"проблем {source_stats['return_task_retention_found']}"
+                )
             merge_analysis_stats(source_stats)
             collect_processed_records("telegram", source_scope, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
@@ -207,6 +289,7 @@ def run() -> None:
             source="client_app",
             skip_ai_conversation_keys=skip_keys,
             force_ai_scan=full_ai_scan,
+            no_reply_check_until=period["report_end_msk"],
         )
         merge_analysis_stats(source_stats)
         collect_processed_records("client_app", source_scope, source_stats)
@@ -237,7 +320,8 @@ def run() -> None:
             issues, dc, source_stats = analyze_source(convs, chat_type=f"Wazzup: {channel_title}",
                                                       source="wazzup", channel_id=channel_id,
                                                       skip_ai_conversation_keys=skip_keys,
-                                                      force_ai_scan=full_ai_scan)
+                                                      force_ai_scan=full_ai_scan,
+                                                      no_reply_check_until=period["report_end_msk"])
             merge_analysis_stats(source_stats)
             collect_processed_records("wazzup", channel_id, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
@@ -254,6 +338,8 @@ def run() -> None:
         pass
     conn = get_connection()
     record_ai_processed_dialogs(conn, period["analysis_date"], ai_processed_records)
+    if return_task_next_offset is not None:
+        set_integration_state(conn, return_task_offset_key, str(return_task_next_offset))
     fresh_issues, total_count = dedup_and_record(conn, all_issues)
     new_count = sum(len(i["problems"]) for i in fresh_issues)
     logger.info(f"Всего проблем: {total_count}, новых после дедупа: {new_count}")
@@ -290,7 +376,15 @@ def run() -> None:
     additional_report = format_additional_report(fresh_issues)
     if additional_report:
         logger.info(additional_report)
-    send_telegram_messages([report, additional_report])
+    sla_report = ""
+    if analysis_totals["dispatcher_sla_checked"]:
+        sla_report = format_slow_responses_text_report(period, analysis_totals["slow_responses"])
+        logger.info(sla_report)
+        logger.info(json.dumps(
+            slow_responses_json_report(analysis_totals["slow_responses"]),
+            ensure_ascii=False,
+        ))
+    send_telegram_messages([report, additional_report, sla_report])
     logger.info("Готово ✓")
 
 

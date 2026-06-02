@@ -41,6 +41,18 @@ def test_wazzup_falls_back_to_dialog_link():
     assert _message_link_label(issue, problem) == "Диалог"
 
 
+def test_wazzup_chat_type_falls_back_to_dialog_link_without_source():
+    issue = {
+        "chat_type": "Wazzup: Основной канал",
+        "conversation_id": "abc",
+        "dialog_link": "https://example.com/wazzup/dialog",
+    }
+    problem = {"message_id": "999"}
+
+    assert build_message_link(issue, problem) == "https://example.com/wazzup/dialog"
+    assert _message_link_label(issue, problem) == "Диалог"
+
+
 def test_no_message_id_falls_back_to_dialog_link():
     issue = {
         "source": "telegram",
@@ -65,6 +77,10 @@ def test_format_report_shows_ai_processing_summary_by_source():
         "skipped_by_filter": 8,
         "return_requests_checked": 4,
         "return_without_retention_found": 1,
+        "return_task_cards_loaded": 1,
+        "return_task_cards_matched": 1,
+        "return_task_cards_unmatched": 0,
+        "return_task_retention_found": 1,
         "source_breakdown": [
             {
                 "source_name": "Диспетчеры",
@@ -72,6 +88,8 @@ def test_format_report_shows_ai_processing_summary_by_source():
                 "ai_processed": 5,
                 "return_requests_checked": 4,
                 "return_without_retention_found": 1,
+                "return_task_cards_matched": 1,
+                "return_task_retention_found": 1,
             },
             {"source_name": "Менеджеры подписок", "sent_to_ai": 1, "ai_processed": 1},
             {"source_name": "Клиентское приложение", "sent_to_ai": 5, "ai_processed": 5},
@@ -86,6 +104,7 @@ def test_format_report_shows_ai_processing_summary_by_source():
     assert "Диспетчеры 5/5" in report
     assert "🧰 Кодовые проверки" in report
     assert "Сдача без удержания: найдено 1 из 4 запросов на сдачу" in report
+    assert "Чат задач сдачи: карточек 1, сопоставлено 1, не найдено диалогов 0, проблем 1" in report
     assert "По источникам сдачи: Диспетчеры 1/4" in report
 
 

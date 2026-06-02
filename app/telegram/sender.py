@@ -263,10 +263,19 @@ def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
     errors = int(analysis_stats.get("ai_errors") or 0)
     return_checked = int(analysis_stats.get("return_requests_checked") or 0)
     return_found = int(analysis_stats.get("return_without_retention_found") or 0)
+    return_task_cards = int(analysis_stats.get("return_task_cards_loaded") or 0)
+    return_task_matched = int(analysis_stats.get("return_task_cards_matched") or 0)
+    return_task_unmatched = int(analysis_stats.get("return_task_cards_unmatched") or 0)
+    return_task_found = int(analysis_stats.get("return_task_retention_found") or 0)
+    return_task_error = int(analysis_stats.get("return_task_fetch_error") or 0)
     full_ai_scan = bool(analysis_stats.get("full_ai_scan"))
 
     has_ai_stats = any((candidates, skipped_filter, skipped_done, skipped_low, errors, full_ai_scan))
-    has_return_stats = bool(return_checked or return_found)
+    has_return_stats = bool(
+        return_checked or return_found or return_task_cards
+        or return_task_matched or return_task_unmatched or return_task_found
+        or return_task_error
+    )
     if not has_ai_stats and not has_return_stats:
         return []
 
@@ -309,6 +318,16 @@ def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
             "🧰 Кодовые проверки",
             f"Сдача без удержания: найдено {return_found} из {return_checked} запросов на сдачу",
         ]
+        if return_task_error:
+            lines.append("Чат задач сдачи: не удалось прочитать Telegram updates")
+        elif return_task_cards or return_task_matched or return_task_unmatched or return_task_found:
+            lines.append(
+                "Чат задач сдачи: "
+                f"карточек {return_task_cards}, "
+                f"сопоставлено {return_task_matched}, "
+                f"не найдено диалогов {return_task_unmatched}, "
+                f"проблем {return_task_found}"
+            )
         return_by_source: dict[str, dict[str, int]] = {}
         for row in analysis_stats.get("source_breakdown", []) or []:
             checked = int(row.get("return_requests_checked") or 0)
