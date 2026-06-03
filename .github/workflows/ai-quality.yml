@@ -1,29 +1,25 @@
-name: STAX Daily Analysis
+name: STAX AI Quality Queue
 
 on:
   schedule:
-    # 20:00 МСК = 17:00 UTC
-    - cron: '0 17 * * *'
-    # 02:00 МСК = 23:00 UTC, ночной добор диалогов за тот же день
-    - cron: '0 23 * * *'
+    # Каждые 6 часов по МСК: 00:00, 06:00, 12:00, 18:00
+    - cron: '0 21,3,9,15 * * *'
+    # Дополнительные ночные прогоны по МСК: 23:30, 02:30, 05:30
+    - cron: '30 20,23,2 * * *'
   workflow_dispatch:
     inputs:
-      run_mode:
-        description: "Режим запуска: code = кодовые проверки + AI-очередь, all = сразу с AI"
-        required: false
-        type: choice
-        default: code
-        options:
-          - code
-          - all
-      full_ai_scan:
-        description: "Полный ручной AI-прогон: отправить все подходящие диалоги в AI и обойти AI-cache"
+      drain_all:
+        description: "Обработать также P3-кандидатов, даже если запуск не ночью"
         required: false
         type: boolean
         default: false
+      queue_limit:
+        description: "Лимит диалогов из AI-очереди за запуск"
+        required: false
+        default: ""
 
 jobs:
-  analyze:
+  analyze-ai-quality:
     runs-on: ubuntu-latest
 
     steps:
@@ -36,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run analysis
+      - name: Run AI quality queue
         run: python -m app.main
         env:
           STAX_TOKEN: ${{ secrets.STAX_TOKEN }}
@@ -56,7 +52,6 @@ jobs:
           RETURN_TASKS_UPDATES_LIMIT: ${{ vars.RETURN_TASKS_UPDATES_LIMIT }}
           AI_QUEUE_DAY_LIMIT: ${{ vars.AI_QUEUE_DAY_LIMIT }}
           AI_QUEUE_NIGHT_LIMIT: ${{ vars.AI_QUEUE_NIGHT_LIMIT }}
-          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
-          RUN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_mode || 'code' }}
-          AI_FULL_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.full_ai_scan || 'false' }}
-          AI_IGNORE_PROCESSED_CACHE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_ai_scan || 'false' }}
+          RUN_MODE: ai_queue
+          AI_QUEUE_DRAIN_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.drain_all || 'false' }}
+          AI_QUEUE_LIMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.queue_limit || '' }}

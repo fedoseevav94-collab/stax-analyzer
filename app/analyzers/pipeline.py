@@ -251,7 +251,9 @@ def analyze_source(conversations: list, chat_type: str, source: str,
                    chat_id: str = "", channel_id: str = "",
                    skip_ai_conversation_keys: set[tuple[str, str]] | None = None,
                    force_ai_scan: bool = False, check_dispatcher_sla: bool = False,
-                   sla_check_until=None, no_reply_check_until=None) -> tuple[list, int, dict]:
+                   sla_check_until=None, no_reply_check_until=None,
+                   run_ai: bool = True,
+                   queue_all_ai_candidates: bool = False) -> tuple[list, int, dict]:
     """
     Возвращает (issues, total_dialogs_count, analysis_stats).
     """
@@ -278,6 +280,7 @@ def analyze_source(conversations: list, chat_type: str, source: str,
 
     all_issues: list = []
     ai_candidates: list = []
+    ai_queue_candidates: list = []
     skipped_by_filter = 0
     skipped_already_processed = 0
     return_requests_checked = 0
@@ -313,22 +316,48 @@ def analyze_source(conversations: list, chat_type: str, source: str,
                 should_send, priority, reason = True, "P1", "полный ручной AI-прогон"
             else:
                 should_send, priority, reason = _ai_filter_decision(conv)
-            if should_send:
+
+            should_queue = should_send or queue_all_ai_candidates
+            if should_queue:
+                if not should_send and queue_all_ai_candidates:
+                    priority = "P3"
+                    reason = f"ночная очередь: {reason}"
                 processed_key = (conv["conversation_id"], conv.get("last_message_key", ""))
                 if processed_key in skip_ai_conversation_keys:
                     skipped_already_processed += 1
                     logger.info(f"[AI SKIP DONE] {conv['conversation_id']}: уже обработан AI, новых сообщений нет")
                     continue
                 conv["ai_candidate_priority"] = priority
+                conv["ai_candidate_reason"] = reason
                 logger.info(f"[AI CANDIDATE] {conv['conversation_id']} {priority}: {reason}")
                 ai_candidates.append(conv)
+                ai_queue_candidates.append({
+                    "source": source,
+                    "source_scope": chat_id or channel_id or source,
+                    "source_name": chat_type,
+                    "conversation_id": conv["conversation_id"],
+                    "last_message_key": conv.get("last_message_key", ""),
+                    "priority": priority,
+                    "reason": reason,
+                    "payload": conv,
+                })
             else:
                 skipped_by_filter += 1
                 logger.info(f"[AI SKIP FILTER] {conv['conversation_id']}: {reason}")
         elif is_bot:
             logger.info(f"[SKIP BOT] {conv['conversation_id']}: сотрудник={conv.get('employee')}")
 
-    ai_issues, ai_stats = analyze_with_ai(ai_candidates)
+    if run_ai:
+        ai_issues, ai_stats = analyze_with_ai(ai_candidates)
+    else:
+        ai_issues, ai_stats = [], {
+            "candidates": len(ai_candidates),
+            "processed": 0,
+            "processed_keys": [],
+            "skipped_low_priority": 0,
+            "errors": 0,
+            "rate_limited": False,
+        }
     all_issues.extend(ai_issues)
     all_issues = _merge_issues_by_conversation(all_issues)
 
@@ -347,6 +376,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         "ai_rate_limited": ai_stats["rate_limited"],
         "ai_skipped_already_processed": skipped_already_processed,
         "ai_processed_keys": ai_stats.get("processed_keys", []),
+        "ai_queue_candidates": ai_queue_candidates,
+        "queued_for_ai": len(ai_queue_candidates),
         "return_requests_checked": return_requests_checked,
         "return_without_retention_found": return_without_retention_found,
         "full_ai_scan": force_ai_scan,
@@ -360,6 +391,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         logger.info(f"Выгружено: {stats['loaded']}")
         logger.info(f"После дедупа: {stats['after_dedup']}")
         logger.info(f"Отправлено в AI: {stats['sent_to_ai']}")
+        if not run_ai:
+            logger.info(f"Поставлено в AI-очередь: {stats['queued_for_ai']}")
         logger.info(f"Пропущено фильтром: {stats['skipped_by_filter']}")
         logger.info(f"Пропущено как уже обработанные AI: {stats['ai_skipped_already_processed']}")
         logger.info(
@@ -374,6 +407,8 @@ def analyze_source(conversations: list, chat_type: str, source: str,
         logger.info(f"Выгружено диалогов: {stats['loaded']}")
         logger.info(f"После дедупа: {stats['after_dedup']}")
         logger.info(f"Отправлено в AI: {stats['sent_to_ai']}")
+        if not run_ai:
+            logger.info(f"Поставлено в AI-очередь: {stats['queued_for_ai']}")
         logger.info(f"Пропущено фильтром: {stats['skipped_by_filter']}")
         logger.info(f"Пропущено как уже обработанные AI: {stats['ai_skipped_already_processed']}")
         logger.info(
