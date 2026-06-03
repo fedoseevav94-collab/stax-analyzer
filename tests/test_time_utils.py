@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
 from app.config import MoscowTZ
-from app.utils.time_utils import get_period_timestamps
+from app.utils.time_utils import get_period_timestamps, get_rolling_24h_period_timestamps
 
 
 def test_main_run_period():
@@ -59,3 +59,20 @@ def test_delayed_main_schedule_before_evening_still_checks_previous_day():
     assert period["analysis_date"] == date(2026, 5, 30)
     assert period["report_start_msk"] == datetime(2026, 5, 30, 0, 0, tzinfo=MoscowTZ)
     assert period["report_end_msk"] == datetime(2026, 5, 30, 19, 0, tzinfo=MoscowTZ)
+
+
+def test_rolling_24h_code_report_period_at_17_msk():
+    period = get_rolling_24h_period_timestamps(datetime(2026, 6, 3, 17, 0, tzinfo=MoscowTZ))
+
+    assert period["period_mode"] == "rolling_24h"
+    assert period["analysis_date"] == date(2026, 6, 3)
+    assert period["report_start_msk"] == datetime(2026, 6, 2, 16, 0, tzinfo=MoscowTZ)
+    assert period["report_end_msk"] == datetime(2026, 6, 3, 16, 0, tzinfo=MoscowTZ)
+
+
+def test_rolling_24h_manual_before_16_uses_previous_window():
+    period = get_rolling_24h_period_timestamps(datetime(2026, 6, 3, 10, 0, tzinfo=MoscowTZ))
+
+    assert period["analysis_date"] == date(2026, 6, 2)
+    assert period["report_start_msk"] == datetime(2026, 6, 1, 16, 0, tzinfo=MoscowTZ)
+    assert period["report_end_msk"] == datetime(2026, 6, 2, 16, 0, tzinfo=MoscowTZ)

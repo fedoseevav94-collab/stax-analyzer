@@ -150,6 +150,26 @@ def test_format_report_shows_queue_mode_without_fake_processing_count():
     assert "Кандидатов обработано: 0/44" not in report
 
 
+def test_format_report_shows_daily_ai_quality_report_wording():
+    period = {
+        "report_start_msk": datetime(2026, 6, 2, 16, 0, tzinfo=MoscowTZ),
+        "report_end_msk": datetime(2026, 6, 3, 16, 0, tzinfo=MoscowTZ),
+    }
+    analysis_stats = {
+        "ai_candidates": 3,
+        "ai_processed": 3,
+        "ai_queue_total": 12,
+        "ai_mode": "daily_quality_report",
+    }
+
+    report = format_report([], 0, period, "ok", [], analysis_stats, title="🤖 STAX: AI-проверка качества")
+
+    assert report.startswith("🤖 STAX: AI-проверка качества")
+    assert "Найдено AI-проблем: 3" in report
+    assert "Осталось в очереди: 12" in report
+    assert "Кандидатов обработано" not in report
+
+
 def test_filter_issues_by_categories_keeps_only_selected_problems():
     issues = [{
         "conversation_id": "1",

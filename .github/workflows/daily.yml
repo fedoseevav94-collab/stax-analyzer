@@ -2,10 +2,8 @@ name: STAX Daily Analysis
 
 on:
   schedule:
-    # 20:00 МСК = 17:00 UTC
-    - cron: '0 17 * * *'
-    # 02:00 МСК = 23:00 UTC, ночной добор диалогов за тот же день
-    - cron: '0 23 * * *'
+    # 17:00 МСК = 14:00 UTC, кодовый отчёт за 16:00-16:00
+    - cron: '0 14 * * *'
   workflow_dispatch:
     inputs:
       run_mode:

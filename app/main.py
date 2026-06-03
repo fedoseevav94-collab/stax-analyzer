@@ -1,14 +1,14 @@
 """
 STAX AI QA Monitor — точка входа.
 Запускается GitHub Actions:
-- 20:00 МСК и 02:00 МСК: кодовые проверки и постановка диалогов в AI-очередь.
-- каждые несколько часов: отдельный AI-прогон очереди качества общения.
-- 20:00-09:00 МСК: AI-прогон разбирает также низкоприоритетные диалоги из очереди.
+- 17:00 МСК: кодовые проверки за период 16:00-16:00 и постановка AI-очереди.
+- 20:00-08:00 МСК каждые 3 часа: AI-прогон очереди без Telegram-шума.
+- 10:00 МСК: один AI-отчёт качества общения за предыдущий отчётный день.
 """
 import os
 import sys
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from app import config
 from app.ai.providers import get_stats as ai_stats
@@ -32,6 +32,8 @@ from app.db.postgres import (
     get_integration_state, set_integration_state,
     enqueue_ai_analysis_candidates, fetch_ai_queue_batch,
     get_ai_queue_counts, mark_ai_queue_attempted, mark_ai_queue_processed,
+    fetch_pending_ai_quality_report_items, mark_ai_quality_report_items_reported,
+    store_ai_quality_report_items,
 )
 from app.exporters.base import fetch_conversations
 from app.exporters.telegram_return_tasks import fetch_return_tasks_from_updates
@@ -44,7 +46,7 @@ from app.telegram.sender import (
     send_telegram_messages,
 )
 from app.utils.text import clean_text, normalize_category
-from app.utils.time_utils import get_period_timestamps
+from app.utils.time_utils import get_period_timestamps, get_rolling_24h_period_timestamps
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -86,6 +88,42 @@ def _is_night_ai_window(now_msk: datetime | None = None) -> bool:
 
 def _problem_count(issues: list) -> int:
     return sum(len(issue.get("problems", [])) for issue in issues or [])
+
+
+def _date_env(name: str, default: date) -> date:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        logger.warning(f"{name}={raw!r} не дата YYYY-MM-DD, использую {default}")
+        return default
+
+
+def _coerce_date(value, default: date) -> date:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    text = clean_text(value)
+    if not text:
+        return default
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return default
+
+
+def _ai_report_period(report_date: date) -> dict:
+    report_end_msk = datetime.combine(report_date, time(hour=16), tzinfo=MoscowTZ)
+    report_start_msk = report_end_msk - timedelta(days=1)
+    return {
+        "report_start_msk": report_start_msk,
+        "report_end_msk": report_end_msk,
+        "analysis_date": report_date,
+        "period_mode": "ai_quality_report",
+    }
 
 
 def dedup_and_record(conn, all_issues: list) -> tuple[list, int]:
@@ -165,10 +203,12 @@ def run_ai_queue() -> None:
     row_by_key = {}
     for row in rows:
         payload = row["payload"]
+        payload["analysis_date"] = row.get("analysis_date")
         payload["ai_candidate_priority"] = row.get("priority") or "P3"
         payload["ai_candidate_reason"] = row.get("reason") or "AI queue"
         candidates.append(payload)
-        row_by_key[(payload.get("conversation_id"), payload.get("last_message_key", ""))] = row["id"]
+        key = (payload.get("conversation_id"), payload.get("last_message_key", ""))
+        row_by_key[key] = row["id"]
 
     ai_issues, queue_ai_stats = analyze_with_ai(candidates)
     processed_keys = {
@@ -182,6 +222,13 @@ def run_ai_queue() -> None:
         mark_ai_queue_attempted(conn, pending_ids, "AI batch was not processed")
 
     fresh_issues, total_count = dedup_and_record(conn, ai_issues)
+    issues_by_report_date: dict[date, list] = {}
+    for issue in fresh_issues:
+        report_date = _coerce_date(issue.get("analysis_date"), period["analysis_date"])
+        issues_by_report_date.setdefault(report_date, []).append(issue)
+    stored_report_items = 0
+    for report_date, issues in issues_by_report_date.items():
+        stored_report_items += store_ai_quality_report_items(conn, report_date, issues)
     after_counts = get_ai_queue_counts(conn)
     stats = ai_stats()
     run_status = "partial" if len(processed_ids) < len(rows) else "ok"
@@ -200,6 +247,7 @@ def run_ai_queue() -> None:
         "ai_queue_p2": after_counts.get("P2", 0),
         "ai_queue_p3": after_counts.get("P3", 0),
         "ai_mode": "queue_worker",
+        "ai_report_items_stored": stored_report_items,
     }
     report = format_report(
         fresh_issues,
@@ -212,8 +260,58 @@ def run_ai_queue() -> None:
     )
     logger.info(report)
     additional_report = format_additional_report(fresh_issues)
-    send_telegram_messages([report, additional_report])
+    if _env_flag("AI_QUEUE_SEND_REPORT"):
+        send_telegram_messages([report, additional_report])
+    else:
+        logger.info("AI очередь обработана без Telegram-отчёта; находки сохранены для утреннего отчёта")
     logger.info("AI очередь обработана ✓")
+
+
+def run_ai_quality_report() -> None:
+    config.validate()
+
+    now_msk = datetime.now(MoscowTZ)
+    report_date = _date_env("AI_REPORT_DATE", (now_msk - timedelta(days=1)).date())
+    period = _ai_report_period(report_date)
+
+    logger.info("=" * 60)
+    logger.info(f"STAX AI Quality Report: дата отчёта {report_date}")
+
+    conn = get_connection()
+    init_db(conn)
+    run_id = record_run_start(conn, period["report_start_msk"], period["report_end_msk"])
+    conn.commit()
+
+    item_ids, issues = fetch_pending_ai_quality_report_items(conn, report_date)
+    queue_counts = get_ai_queue_counts(conn)
+    weekly_top = get_weekly_top_offenders(conn, top_n=3)
+
+    analysis_stats = {
+        "ai_candidates": len(issues),
+        "ai_processed": len(issues),
+        "ai_queue_total": queue_counts["total"],
+        "ai_queue_p1": queue_counts.get("P1", 0),
+        "ai_queue_p2": queue_counts.get("P2", 0),
+        "ai_queue_p3": queue_counts.get("P3", 0),
+        "ai_mode": "daily_quality_report",
+    }
+    total_count = _problem_count(issues)
+    report = format_report(
+        issues,
+        total_count,
+        period,
+        "ok",
+        weekly_top,
+        analysis_stats,
+        title="🤖 STAX: AI-проверка качества",
+    )
+    additional_report = format_additional_report(issues)
+    send_telegram_messages([report, additional_report])
+    mark_ai_quality_report_items_reported(conn, item_ids)
+    record_run_finish(conn, run_id, total_count, 0, 0, "ok")
+    conn.commit()
+    conn.close()
+    logger.info("AI-отчёт качества отправлен ✓")
 
 
 def run() -> None:
@@ -223,8 +321,14 @@ def run() -> None:
     if run_mode in {"ai", "ai_queue", "quality"}:
         run_ai_queue()
         return
+    if run_mode in {"ai_report", "quality_report"}:
+        run_ai_quality_report()
+        return
 
-    period = get_period_timestamps(schedule_cron=os.getenv("GITHUB_EVENT_SCHEDULE"))
+    if run_mode == "code":
+        period = get_rolling_24h_period_timestamps(schedule_cron=os.getenv("GITHUB_EVENT_SCHEDULE"))
+    else:
+        period = get_period_timestamps(schedule_cron=os.getenv("GITHUB_EVENT_SCHEDULE"))
     full_ai_scan = _env_flag("AI_FULL_SCAN")
     run_ai_now = run_mode in {"all", "legacy"} or full_ai_scan
     queue_all_ai_candidates = not run_ai_now

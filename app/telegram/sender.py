@@ -302,6 +302,8 @@ def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
         lines.append("🤖 AI-проверка")
         if ai_mode == "queued":
             lines.append(f"Поставлено в очередь: {queued or candidates}")
+        elif ai_mode == "daily_quality_report":
+            lines.append(f"Найдено AI-проблем: {processed}")
         else:
             lines.append(f"Кандидатов обработано: {processed}/{candidates}")
         if queued:

@@ -2,12 +2,20 @@ name: STAX AI Quality Queue
 
 on:
   schedule:
-    # Каждые 6 часов по МСК: 00:00, 06:00, 12:00, 18:00
-    - cron: '0 21,3,9,15 * * *'
-    # Дополнительные ночные прогоны по МСК: 23:30, 02:30, 05:30
-    - cron: '30 20,23,2 * * *'
+    # AI обрабатывает очередь каждые 3 часа с 20:00 до 08:00 МСК
+    - cron: '0 17,20,23,2,5 * * *'
+    # 10:00 МСК = 07:00 UTC, единый AI-отчёт за предыдущий отчётный день
+    - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
+      run_mode:
+        description: "ai_queue = обработать очередь, ai_report = отправить накопленный отчёт"
+        required: false
+        type: choice
+        default: ai_queue
+        options:
+          - ai_queue
+          - ai_report
       drain_all:
         description: "Обработать также P3-кандидатов, даже если запуск не ночью"
         required: false
@@ -52,6 +60,7 @@ jobs:
           RETURN_TASKS_UPDATES_LIMIT: ${{ vars.RETURN_TASKS_UPDATES_LIMIT }}
           AI_QUEUE_DAY_LIMIT: ${{ vars.AI_QUEUE_DAY_LIMIT }}
           AI_QUEUE_NIGHT_LIMIT: ${{ vars.AI_QUEUE_NIGHT_LIMIT }}
-          RUN_MODE: ai_queue
+          RUN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_mode || (github.event.schedule == '0 7 * * *' && 'ai_report' || 'ai_queue') }}
           AI_QUEUE_DRAIN_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.drain_all || 'false' }}
           AI_QUEUE_LIMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.queue_limit || '' }}
+          AI_QUEUE_SEND_REPORT: "false"
