@@ -7,6 +7,7 @@ from app.config import MoscowTZ
 
 MAIN_RUN_CRON = "0 17 * * *"
 RETRY_RUN_CRON = "0 23 * * *"
+CODE_ROLLING_RUN_CRON = "0 14 * * *"
 
 
 def _as_moscow(now: datetime | None) -> datetime:
@@ -59,4 +60,35 @@ def get_period_timestamps(now: datetime | None = None, schedule_cron: str | None
         "report_end_msk": report_end_msk,
         "analysis_date": target_date,
         "period_mode": period_mode,
+    }
+
+
+def get_rolling_24h_period_timestamps(
+    now: datetime | None = None,
+    end_hour: int = 16,
+    schedule_cron: str | None = None,
+) -> dict:
+    """
+    Кодовый отчёт в 17:00 МСК проверяет ровные прошедшие сутки: 16:00-16:00.
+    Если scheduled job задержался, период всё равно привязан к последнему 16:00.
+    """
+    now_msk = _as_moscow(now)
+    end_date = now_msk.date()
+    end_time = time(hour=end_hour)
+    if now_msk.time() < end_time:
+        end_date = (now_msk - timedelta(days=1)).date()
+
+    report_end_msk = datetime.combine(end_date, end_time, tzinfo=MoscowTZ)
+    report_start_msk = report_end_msk - timedelta(days=1)
+
+    return {
+        "fetch_start_ts": int(report_start_msk.timestamp()),
+        "fetch_end_ts": int(report_end_msk.timestamp()),
+        "report_start_ts": int(report_start_msk.timestamp()),
+        "report_end_ts": int(report_end_msk.timestamp()),
+        "report_start_msk": report_start_msk,
+        "report_end_msk": report_end_msk,
+        "analysis_date": report_end_msk.date(),
+        "period_mode": "rolling_24h",
+        "schedule_cron": (schedule_cron or "").strip(),
     }

@@ -385,6 +385,7 @@ def analyze_with_ai(candidates: list) -> tuple[list, dict]:
                         "source": base.get("source", ""),
                         "chat_id": base.get("chat_id", ""),
                         "channel_id": base.get("channel_id", ""),
+                        "analysis_date": base.get("analysis_date", ""),
                         "problems": validated,
                     })
 

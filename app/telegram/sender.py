@@ -251,12 +251,30 @@ def _partial_analysis_warning(run_status: str, analysis_stats: dict | None) -> s
     return "⚠️ Анализ выполнен частично: AI был недоступен на части диалогов."
 
 
+def filter_issues_by_categories(issues: list, categories: set[str]) -> list:
+    wanted = {normalize_category(category) for category in categories}
+    filtered = []
+    for issue in issues or []:
+        problems = [
+            problem for problem in issue.get("problems", [])
+            if normalize_category(problem.get("category")) in wanted
+        ]
+        if problems:
+            copy = dict(issue)
+            copy["problems"] = problems
+            filtered.append(copy)
+    return filtered
+
+
 def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
     if not analysis_stats:
         return []
 
     candidates = int(analysis_stats.get("ai_candidates") or analysis_stats.get("sent_to_ai") or 0)
     processed = int(analysis_stats.get("ai_processed") or 0)
+    queued = int(analysis_stats.get("ai_queued") or analysis_stats.get("queued_for_ai") or 0)
+    queue_total = int(analysis_stats.get("ai_queue_total") or 0)
+    ai_mode = clean_text(analysis_stats.get("ai_mode")).lower()
     skipped_filter = int(analysis_stats.get("skipped_by_filter") or 0)
     skipped_done = int(analysis_stats.get("ai_skipped_already_processed") or 0)
     skipped_low = int(analysis_stats.get("ai_skipped_low_priority") or 0)
@@ -270,7 +288,7 @@ def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
     return_task_error = int(analysis_stats.get("return_task_fetch_error") or 0)
     full_ai_scan = bool(analysis_stats.get("full_ai_scan"))
 
-    has_ai_stats = any((candidates, skipped_filter, skipped_done, skipped_low, errors, full_ai_scan))
+    has_ai_stats = any((candidates, queued, queue_total, skipped_filter, skipped_done, skipped_low, errors, full_ai_scan))
     has_return_stats = bool(
         return_checked or return_found or return_task_cards
         or return_task_matched or return_task_unmatched or return_task_found
@@ -281,10 +299,18 @@ def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
 
     lines = []
     if has_ai_stats:
-        lines += [
-            "🤖 AI-проверка",
-            f"Кандидатов обработано: {processed}/{candidates}",
-        ]
+        lines.append("🤖 AI-проверка")
+        if ai_mode == "queued":
+            lines.append(f"Поставлено в очередь: {queued or candidates}")
+        elif ai_mode == "daily_quality_report":
+            lines.append(f"Найдено AI-проблем: {processed}")
+        else:
+            lines.append(f"Кандидатов обработано: {processed}/{candidates}")
+        if queued:
+            if ai_mode != "queued":
+                lines.append(f"Поставлено в очередь: {queued}")
+        if queue_total:
+            lines.append(f"Осталось в очереди: {queue_total}")
         if full_ai_scan:
             lines.append("Режим: полный ручной прогон")
         if skipped_filter:
@@ -350,7 +376,8 @@ def _ai_summary_lines(analysis_stats: dict | None) -> list[str]:
 
 
 def format_report(fresh_issues: list, total_count: int, period: dict,
-                  run_status: str, weekly_top: list, analysis_stats: dict | None = None) -> str:
+                  run_status: str, weekly_top: list, analysis_stats: dict | None = None,
+                  title: str = "🔍 STAX AI Analyzer") -> str:
     start_msk = period["report_start_msk"]
     end_msk = period["report_end_msk"]
     period_str = f"{start_msk:%d.%m %H:%M} — {end_msk:%d.%m %H:%M} МСК"
@@ -364,7 +391,7 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
 
     if not fresh_issues:
         lines = [
-            "🔍 STAX AI Analyzer",
+            title,
             f"Период: {period_str}",
             "",
             "📊 Сводка",
@@ -388,7 +415,7 @@ def format_report(fresh_issues: list, total_count: int, period: dict,
         topic_counts = Counter(_topic_name(row["issue"]) for row in rows)
 
         lines = [
-            "🔍 STAX AI Analyzer",
+            title,
             f"Период: {period_str}",
             "",
             "📊 Сводка",

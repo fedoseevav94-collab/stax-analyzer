@@ -264,22 +264,31 @@ def slow_responses_json_report(slow_responses: list[dict]) -> dict:
     return {"slow_responses": slow_responses or []}
 
 
+def _shorten(text: str, limit: int) -> str:
+    text = clean_text(text)
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1].rstrip() + "…"
+
+
+def _time_only(value: str) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    parts = text.split()
+    return parts[-1] if parts else text
+
+
 def format_slow_responses_text_report(period: dict, slow_responses: list[dict]) -> str:
     start_msk = period["report_start_msk"]
     period_date = start_msk.strftime("%d.%m.%Y")
     dialog_count = len({item.get("conversation_id") for item in slow_responses or []})
 
     lines = [
-        "ОТЧЁТ ПО ЗАДЕРЖКАМ ОТВЕТОВ ДИСПЕТЧЕРОВ",
-        "",
+        "⏱ Задержки ответов диспетчеров",
         f"Период: {period_date}",
-        "Рабочий день: 09:00–21:00 МСК",
-        "Льготный период: 09:00–09:30 МСК",
-        "Задержки считаются: 09:30–21:00 МСК",
-        f"Порог: {SLA_THRESHOLD_MINUTES} минут и более",
-        "",
-        f"Всего задержек: {len(slow_responses or [])}",
-        f"Диалогов с задержками: {dialog_count}",
+        f"SLA: 09:30–21:00 МСК, порог {SLA_THRESHOLD_MINUTES}+ мин",
+        f"Всего: {len(slow_responses or [])} задержек в {dialog_count} диалогах",
     ]
 
     if not slow_responses:
@@ -287,37 +296,30 @@ def format_slow_responses_text_report(period: dict, slow_responses: list[dict]) 
         return "\n".join(lines)
 
     for index, item in enumerate(slow_responses, start=1):
-        dispatcher_line = "Диспетчер:"
+        delay = item.get("delay_minutes")
+        dispatcher_name = clean_text(item.get("dispatcher_name"))
         if item.get("status") == "нет ответа":
-            dispatcher_line += "\nнет ответа на момент выгрузки"
+            header = f"{index}. 🔴 {delay} мин — ответа нет"
+            dispatcher_line = "Ответ: нет на момент выгрузки"
         else:
-            dispatcher_name = clean_text(item.get("dispatcher_name")) or "Диспетчер"
+            header = f"{index}. 🟡 {delay} мин"
+            if dispatcher_name:
+                header += f" — {dispatcher_name}"
+            dispatcher_time = _time_only(item.get("dispatcher_datetime_msk"))
             dispatcher_line = (
-                f"Диспетчер {dispatcher_name} "
-                f"(ОТВЕТ {item.get('dispatcher_datetime_msk')}, "
-                f"message_index: {item.get('dispatcher_message_index')}):\n"
-                f"\"{item.get('dispatcher_quote')}\""
+                f"Ответ {dispatcher_time}: "
+                f"«{_shorten(item.get('dispatcher_quote'), 140)}»"
             )
+
+        client_time = _time_only(item.get("driver_datetime_msk"))
 
         lines += [
             "",
-            "---",
-            "",
-            f"{index}. conversation_id: {item.get('conversation_id')}",
-            f"Ссылка на диалог: {item.get('conversation_url', '')}",
-            f"Задержка по ответу: {item.get('delay_minutes')} минут",
-            f"Статус: {item.get('status')}",
-            "",
-            (
-                f"Водитель/Клиент ({item.get('driver_datetime_msk')}, "
-                f"message_index: {item.get('driver_message_index')}):"
-            ),
-            f"\"{item.get('driver_quote')}\"",
-            "",
+            header,
+            f"Клиент {client_time}: «{_shorten(item.get('driver_quote'), 140)}»",
             dispatcher_line,
-            "",
-            "Комментарий расчёта:",
-            clean_text(item.get("calculation_comment")),
+            f"ID: {item.get('conversation_id')}",
+            f"Диалог: {item.get('conversation_url', '')}",
         ]
 
     return "\n".join(lines)

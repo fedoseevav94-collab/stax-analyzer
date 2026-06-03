@@ -1,7 +1,12 @@
 from datetime import datetime
 
 from app.config import MoscowTZ
-from app.telegram.sender import _message_link_label, build_message_link, format_report
+from app.telegram.sender import (
+    _message_link_label,
+    build_message_link,
+    filter_issues_by_categories,
+    format_report,
+)
 
 
 def test_telegram_message_link():
@@ -122,6 +127,62 @@ def test_format_report_shows_full_ai_scan_mode():
     report = format_report([], 0, period, "ok", [], analysis_stats)
 
     assert "Режим: полный ручной прогон" in report
+
+
+def test_format_report_shows_queue_mode_without_fake_processing_count():
+    period = {
+        "report_start_msk": datetime(2026, 5, 29, 0, 0, tzinfo=MoscowTZ),
+        "report_end_msk": datetime(2026, 5, 29, 19, 0, tzinfo=MoscowTZ),
+    }
+    analysis_stats = {
+        "ai_candidates": 44,
+        "ai_processed": 0,
+        "ai_queued": 44,
+        "ai_queue_total": 92,
+        "ai_mode": "queued",
+    }
+
+    report = format_report([], 0, period, "ok", [], analysis_stats, title="🧰 STAX: Кодовые проверки")
+
+    assert report.startswith("🧰 STAX: Кодовые проверки")
+    assert "Поставлено в очередь: 44" in report
+    assert "Осталось в очереди: 92" in report
+    assert "Кандидатов обработано: 0/44" not in report
+
+
+def test_format_report_shows_daily_ai_quality_report_wording():
+    period = {
+        "report_start_msk": datetime(2026, 6, 2, 16, 0, tzinfo=MoscowTZ),
+        "report_end_msk": datetime(2026, 6, 3, 16, 0, tzinfo=MoscowTZ),
+    }
+    analysis_stats = {
+        "ai_candidates": 3,
+        "ai_processed": 3,
+        "ai_queue_total": 12,
+        "ai_mode": "daily_quality_report",
+    }
+
+    report = format_report([], 0, period, "ok", [], analysis_stats, title="🤖 STAX: AI-проверка качества")
+
+    assert report.startswith("🤖 STAX: AI-проверка качества")
+    assert "Найдено AI-проблем: 3" in report
+    assert "Осталось в очереди: 12" in report
+    assert "Кандидатов обработано" not in report
+
+
+def test_filter_issues_by_categories_keeps_only_selected_problems():
+    issues = [{
+        "conversation_id": "1",
+        "problems": [
+            {"category": "БЕЗ_ОТВЕТА"},
+            {"category": "КОНФЛИКТ"},
+        ],
+    }]
+
+    filtered = filter_issues_by_categories(issues, {"БЕЗ_ОТВЕТА"})
+
+    assert len(filtered) == 1
+    assert filtered[0]["problems"] == [{"category": "БЕЗ_ОТВЕТА"}]
 
 
 def test_format_report_problem_card_is_compact():

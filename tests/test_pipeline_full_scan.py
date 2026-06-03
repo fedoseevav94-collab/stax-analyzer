@@ -71,3 +71,34 @@ def test_full_scan_bypasses_ai_prefilter(monkeypatch):
     assert stats["skipped_by_filter"] == 0
     assert stats["full_ai_scan"] is True
     assert captured["priority"] == "P1"
+
+
+def test_code_mode_can_queue_normal_dialog_without_calling_ai(monkeypatch):
+    def fail_if_ai_called(candidates):
+        raise AssertionError("AI should not be called in queue-only mode")
+
+    monkeypatch.setattr(pipeline, "analyze_with_ai", fail_if_ai_called)
+
+    _, _, stats = pipeline.analyze_source(
+        [{
+            "conversation_id": "normal-1",
+            "employee": "Диспетчер",
+            "messages": [
+                {"role": "client", "text": "Спасибо"},
+                {"role": "employee", "text": "Пожалуйста"},
+            ],
+        }],
+        chat_type="Диспетчеры",
+        source="telegram",
+        chat_id="15",
+        run_ai=False,
+        queue_all_ai_candidates=True,
+    )
+
+    assert stats["sent_to_ai"] == 1
+    assert stats["queued_for_ai"] == 1
+    assert stats["ai_processed"] == 0
+    assert stats["skipped_by_filter"] == 0
+    queued = stats["ai_queue_candidates"][0]
+    assert queued["conversation_id"] == "normal-1"
+    assert queued["priority"] == "P3"

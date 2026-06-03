@@ -1,15 +1,18 @@
 """
 STAX AI QA Monitor — точка входа.
 Запускается GitHub Actions:
-- 20:00 МСК: основной анализ текущего дня 00:00-19:00.
-- 02:00 МСК: ночной добор того же дня до полуночи.
+- 17:00 МСК: кодовые проверки за период 16:00-16:00 и постановка AI-очереди.
+- 20:00-08:00 МСК каждые 3 часа: AI-прогон очереди без Telegram-шума.
+- 10:00 МСК: один AI-отчёт качества общения за предыдущий отчётный день.
 """
 import os
 import sys
 import json
+from datetime import date, datetime, time, timedelta
 
 from app import config
 from app.ai.providers import get_stats as ai_stats
+from app.analyzers.ai_analyzer import analyze_with_ai
 from app.analyzers.dispatcher_sla import (
     format_slow_responses_text_report,
     slow_responses_json_report,
@@ -19,6 +22,7 @@ from app.config import (
     TG_ENDPOINTS, CLIENT_APP_URL, WAZZUP_MESSAGES_URL_TEMPLATE,
     AI_FAILURE_THRESHOLD, CONFIDENCE_THRESHOLD, DEDUP_WINDOW_DAYS, MoscowTZ,
     RETURN_TASKS_CHAT_ID, RETURN_TASKS_UPDATES_LIMIT, TELEGRAM_BOT_TOKEN,
+    AI_QUEUE_DAY_LIMIT, AI_QUEUE_NIGHT_LIMIT,
 )
 from app.db.postgres import (
     get_connection, init_db,
@@ -26,14 +30,23 @@ from app.db.postgres import (
     get_weekly_top_offenders, record_run_start, record_run_finish,
     get_ai_processed_conversation_keys, record_ai_processed_dialogs,
     get_integration_state, set_integration_state,
+    enqueue_ai_analysis_candidates, fetch_ai_queue_batch,
+    get_ai_queue_counts, mark_ai_queue_attempted, mark_ai_queue_processed,
+    fetch_pending_ai_quality_report_items, mark_ai_quality_report_items_reported,
+    store_ai_quality_report_items,
 )
 from app.exporters.base import fetch_conversations
 from app.exporters.telegram_return_tasks import fetch_return_tasks_from_updates
 from app.exporters.wazzup import fetch_wazzup_channels
 from app.logger import logger
-from app.telegram.sender import format_additional_report, format_report, send_telegram_messages
+from app.telegram.sender import (
+    filter_issues_by_categories,
+    format_additional_report,
+    format_report,
+    send_telegram_messages,
+)
 from app.utils.text import clean_text, normalize_category
-from app.utils.time_utils import get_period_timestamps
+from app.utils.time_utils import get_period_timestamps, get_rolling_24h_period_timestamps
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -42,6 +55,8 @@ except Exception:
 
 
 TRUE_ENV_VALUES = {"1", "true", "yes", "y", "on", "да"}
+NO_REPLY_CATEGORIES = {"БЕЗ_ОТВЕТА"}
+CODE_SERVICE_CATEGORIES = {"БЕЗ_ПРИВЕТСТВИЯ", "СДАЧА_БЕЗ_УДЕРЖАНИЯ"}
 
 
 def _env_flag(name: str) -> bool:
@@ -53,6 +68,62 @@ def _optional_int(value: str):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(f"{name}={raw!r} не число, использую {default}")
+        return default
+
+
+def _is_night_ai_window(now_msk: datetime | None = None) -> bool:
+    now_msk = now_msk or datetime.now(MoscowTZ)
+    return now_msk.hour >= 20 or now_msk.hour < 9
+
+
+def _problem_count(issues: list) -> int:
+    return sum(len(issue.get("problems", [])) for issue in issues or [])
+
+
+def _date_env(name: str, default: date) -> date:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        logger.warning(f"{name}={raw!r} не дата YYYY-MM-DD, использую {default}")
+        return default
+
+
+def _coerce_date(value, default: date) -> date:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    text = clean_text(value)
+    if not text:
+        return default
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return default
+
+
+def _ai_report_period(report_date: date) -> dict:
+    report_end_msk = datetime.combine(report_date, time(hour=16), tzinfo=MoscowTZ)
+    report_start_msk = report_end_msk - timedelta(days=1)
+    return {
+        "report_start_msk": report_start_msk,
+        "report_end_msk": report_end_msk,
+        "analysis_date": report_date,
+        "period_mode": "ai_quality_report",
+    }
 
 
 def dedup_and_record(conn, all_issues: list) -> tuple[list, int]:
@@ -88,18 +159,189 @@ def dedup_and_record(conn, all_issues: list) -> tuple[list, int]:
     return fresh_issues, total_count
 
 
+def run_ai_queue() -> None:
+    config.validate()
+
+    now_msk = datetime.now(MoscowTZ)
+    period = {
+        "report_start_msk": now_msk - timedelta(hours=6),
+        "report_end_msk": now_msk,
+        "analysis_date": now_msk.date(),
+        "period_mode": "ai_queue",
+    }
+    include_low_priority = _env_flag("AI_QUEUE_DRAIN_ALL") or _is_night_ai_window(now_msk)
+    default_limit = AI_QUEUE_NIGHT_LIMIT if include_low_priority else AI_QUEUE_DAY_LIMIT
+    queue_limit = _int_env("AI_QUEUE_LIMIT", default_limit)
+
+    logger.info("=" * 60)
+    logger.info("STAX AI Queue Analyzer запущен")
+    logger.info(f"Режим очереди: {'ночной полный' if include_low_priority else 'дневной P1/P2'}")
+    logger.info(f"Лимит диалогов за запуск: {queue_limit}")
+
+    conn = get_connection()
+    init_db(conn)
+    run_id = record_run_start(conn, period["report_start_msk"], period["report_end_msk"])
+    conn.commit()
+
+    before_counts = get_ai_queue_counts(conn)
+    rows = fetch_ai_queue_batch(conn, queue_limit, include_low_priority=include_low_priority)
+    logger.info(
+        "AI очередь до запуска: "
+        f"total={before_counts['total']}, P1={before_counts.get('P1', 0)}, "
+        f"P2={before_counts.get('P2', 0)}, P3={before_counts.get('P3', 0)}"
+    )
+    logger.info(f"Взято из очереди: {len(rows)}")
+
+    if not rows:
+        record_run_finish(conn, run_id, 0, 0, 0, "ok")
+        conn.commit()
+        conn.close()
+        logger.info("AI очередь пуста, Telegram-отчёт не отправляю")
+        return
+
+    candidates = []
+    row_by_key = {}
+    for row in rows:
+        payload = row["payload"]
+        payload["analysis_date"] = row.get("analysis_date")
+        payload["ai_candidate_priority"] = row.get("priority") or "P3"
+        payload["ai_candidate_reason"] = row.get("reason") or "AI queue"
+        candidates.append(payload)
+        key = (payload.get("conversation_id"), payload.get("last_message_key", ""))
+        row_by_key[key] = row["id"]
+
+    ai_issues, queue_ai_stats = analyze_with_ai(candidates)
+    processed_keys = {
+        (item.get("conversation_id"), item.get("last_message_key", ""))
+        for item in queue_ai_stats.get("processed_keys", [])
+    }
+    processed_ids = [row_by_key[key] for key in processed_keys if key in row_by_key]
+    pending_ids = [row["id"] for row in rows if row["id"] not in set(processed_ids)]
+    mark_ai_queue_processed(conn, processed_ids)
+    if pending_ids and queue_ai_stats.get("errors"):
+        mark_ai_queue_attempted(conn, pending_ids, "AI batch was not processed")
+
+    fresh_issues, total_count = dedup_and_record(conn, ai_issues)
+    issues_by_report_date: dict[date, list] = {}
+    for issue in fresh_issues:
+        report_date = _coerce_date(issue.get("analysis_date"), period["analysis_date"])
+        issues_by_report_date.setdefault(report_date, []).append(issue)
+    stored_report_items = 0
+    for report_date, issues in issues_by_report_date.items():
+        stored_report_items += store_ai_quality_report_items(conn, report_date, issues)
+    after_counts = get_ai_queue_counts(conn)
+    stats = ai_stats()
+    run_status = "partial" if len(processed_ids) < len(rows) else "ok"
+    record_run_finish(conn, run_id, total_count, stats["calls"], stats["failures"], run_status)
+    conn.commit()
+    weekly_top = get_weekly_top_offenders(conn, top_n=3)
+    conn.close()
+
+    analysis_stats = {
+        "ai_candidates": len(rows),
+        "ai_processed": len(processed_ids),
+        "ai_errors": queue_ai_stats.get("errors", 0),
+        "ai_skipped_low_priority": queue_ai_stats.get("skipped_low_priority", 0),
+        "ai_queue_total": after_counts["total"],
+        "ai_queue_p1": after_counts.get("P1", 0),
+        "ai_queue_p2": after_counts.get("P2", 0),
+        "ai_queue_p3": after_counts.get("P3", 0),
+        "ai_mode": "queue_worker",
+        "ai_report_items_stored": stored_report_items,
+    }
+    report = format_report(
+        fresh_issues,
+        total_count,
+        period,
+        run_status,
+        weekly_top,
+        analysis_stats,
+        title="🤖 STAX: Качество общения",
+    )
+    logger.info(report)
+    additional_report = format_additional_report(fresh_issues)
+    if _env_flag("AI_QUEUE_SEND_REPORT"):
+        send_telegram_messages([report, additional_report])
+    else:
+        logger.info("AI очередь обработана без Telegram-отчёта; находки сохранены для утреннего отчёта")
+    logger.info("AI очередь обработана ✓")
+
+
+def run_ai_quality_report() -> None:
+    config.validate()
+
+    now_msk = datetime.now(MoscowTZ)
+    report_date = _date_env("AI_REPORT_DATE", (now_msk - timedelta(days=1)).date())
+    period = _ai_report_period(report_date)
+
+    logger.info("=" * 60)
+    logger.info(f"STAX AI Quality Report: дата отчёта {report_date}")
+
+    conn = get_connection()
+    init_db(conn)
+    run_id = record_run_start(conn, period["report_start_msk"], period["report_end_msk"])
+    conn.commit()
+
+    item_ids, issues = fetch_pending_ai_quality_report_items(conn, report_date)
+    queue_counts = get_ai_queue_counts(conn)
+    weekly_top = get_weekly_top_offenders(conn, top_n=3)
+
+    analysis_stats = {
+        "ai_candidates": len(issues),
+        "ai_processed": len(issues),
+        "ai_queue_total": queue_counts["total"],
+        "ai_queue_p1": queue_counts.get("P1", 0),
+        "ai_queue_p2": queue_counts.get("P2", 0),
+        "ai_queue_p3": queue_counts.get("P3", 0),
+        "ai_mode": "daily_quality_report",
+    }
+    total_count = _problem_count(issues)
+    report = format_report(
+        issues,
+        total_count,
+        period,
+        "ok",
+        weekly_top,
+        analysis_stats,
+        title="🤖 STAX: AI-проверка качества",
+    )
+    additional_report = format_additional_report(issues)
+    send_telegram_messages([report, additional_report])
+    mark_ai_quality_report_items_reported(conn, item_ids)
+    record_run_finish(conn, run_id, total_count, 0, 0, "ok")
+    conn.commit()
+    conn.close()
+    logger.info("AI-отчёт качества отправлен ✓")
+
+
 def run() -> None:
     config.validate()
 
-    period = get_period_timestamps(schedule_cron=os.getenv("GITHUB_EVENT_SCHEDULE"))
+    run_mode = (os.getenv("RUN_MODE") or "code").strip().lower()
+    if run_mode in {"ai", "ai_queue", "quality"}:
+        run_ai_queue()
+        return
+    if run_mode in {"ai_report", "quality_report"}:
+        run_ai_quality_report()
+        return
+
+    if run_mode == "code":
+        period = get_rolling_24h_period_timestamps(schedule_cron=os.getenv("GITHUB_EVENT_SCHEDULE"))
+    else:
+        period = get_period_timestamps(schedule_cron=os.getenv("GITHUB_EVENT_SCHEDULE"))
     full_ai_scan = _env_flag("AI_FULL_SCAN")
+    run_ai_now = run_mode in {"all", "legacy"} or full_ai_scan
+    queue_all_ai_candidates = not run_ai_now
     ignore_ai_cache = _env_flag("AI_IGNORE_PROCESSED_CACHE") or full_ai_scan
     logger.info("=" * 60)
     logger.info("STAX Analyzer запущен")
     logger.info(f"Период МСК: {period['report_start_msk']} → {period['report_end_msk']}")
     logger.info(f"Режим периода: {period.get('period_mode')} / дата анализа: {period.get('analysis_date')}")
+    logger.info(f"Режим запуска: {run_mode}")
     if full_ai_scan:
         logger.info("AI режим: полный ручной прогон, предфильтр отключён")
+    if not run_ai_now:
+        logger.info("AI режим: диалоги ставятся в очередь, непосредственный AI-анализ отключён")
     if ignore_ai_cache:
         logger.info("AI cache: отключён для этого запуска")
     logger.info(f"Confidence threshold: {CONFIDENCE_THRESHOLD}, Dedup window: {DEDUP_WINDOW_DAYS}д")
@@ -121,6 +363,9 @@ def run() -> None:
         "ai_errors": 0,
         "ai_rate_limited": False,
         "ai_skipped_already_processed": 0,
+        "ai_queued": 0,
+        "ai_queue_total": 0,
+        "ai_mode": "queued" if not run_ai_now else "inline",
         "return_requests_checked": 0,
         "return_without_retention_found": 0,
         "full_ai_scan": full_ai_scan,
@@ -137,6 +382,7 @@ def run() -> None:
         "source_breakdown": [],
     }
     ai_processed_records: list[dict] = []
+    ai_queue_records: list[dict] = []
     return_task_offset_key = f"telegram_return_tasks_offset:{RETURN_TASKS_CHAT_ID}"
     return_task_next_offset = None
     return_tasks: list[dict] = []
@@ -162,12 +408,13 @@ def run() -> None:
         for key in (
             "loaded", "sent_to_ai", "skipped_by_filter", "ai_candidates",
             "ai_processed", "ai_skipped_low_priority", "ai_errors",
-            "ai_skipped_already_processed", "return_requests_checked",
-            "return_without_retention_found", "dispatcher_sla_checked",
-            "dispatcher_sla_found", "return_task_cards_matched",
-            "return_task_cards_unmatched", "return_task_retention_found",
+                "ai_skipped_already_processed", "return_requests_checked",
+                "return_without_retention_found", "dispatcher_sla_checked",
+                "dispatcher_sla_found", "return_task_cards_matched",
+                "return_task_cards_unmatched", "return_task_retention_found",
         ):
             analysis_totals[key] += int(stats.get(key) or 0)
+        analysis_totals["ai_queued"] += int(stats.get("queued_for_ai") or 0)
         analysis_totals["slow_responses"].extend(stats.get("slow_responses") or [])
         analysis_totals["ai_rate_limited"] = (
             analysis_totals["ai_rate_limited"] or bool(stats.get("ai_rate_limited"))
@@ -180,6 +427,7 @@ def run() -> None:
                 "ai_processed": int(stats.get("ai_processed") or 0),
                 "skipped_by_filter": int(stats.get("skipped_by_filter") or 0),
                 "ai_skipped_already_processed": int(stats.get("ai_skipped_already_processed") or 0),
+                "queued_for_ai": int(stats.get("queued_for_ai") or 0),
                 "return_requests_checked": int(stats.get("return_requests_checked") or 0),
                 "return_without_retention_found": int(stats.get("return_without_retention_found") or 0),
                 "dispatcher_sla_checked": int(stats.get("dispatcher_sla_checked") or 0),
@@ -212,6 +460,7 @@ def run() -> None:
                 "conversation_id": item.get("conversation_id"),
                 "last_message_key": item.get("last_message_key"),
             })
+        ai_queue_records.extend(stats.get("ai_queue_candidates") or [])
 
     def add_stats(chat_type: str, dialogs_count: int, issues: list) -> None:
         per_emp: dict = {}
@@ -241,7 +490,9 @@ def run() -> None:
                                                       force_ai_scan=full_ai_scan,
                                                       check_dispatcher_sla=chat_type == "Диспетчеры",
                                                       sla_check_until=period["report_end_msk"],
-                                                      no_reply_check_until=period["report_end_msk"])
+                                                      no_reply_check_until=period["report_end_msk"],
+                                                      run_ai=run_ai_now,
+                                                      queue_all_ai_candidates=queue_all_ai_candidates)
             if chat_type == "Диспетчеры" and return_tasks:
                 existing_return_issue_ids = {
                     clean_text(issue.get("conversation_id"))
@@ -290,6 +541,8 @@ def run() -> None:
             skip_ai_conversation_keys=skip_keys,
             force_ai_scan=full_ai_scan,
             no_reply_check_until=period["report_end_msk"],
+            run_ai=run_ai_now,
+            queue_all_ai_candidates=queue_all_ai_candidates,
         )
         merge_analysis_stats(source_stats)
         collect_processed_records("client_app", source_scope, source_stats)
@@ -321,7 +574,9 @@ def run() -> None:
                                                       source="wazzup", channel_id=channel_id,
                                                       skip_ai_conversation_keys=skip_keys,
                                                       force_ai_scan=full_ai_scan,
-                                                      no_reply_check_until=period["report_end_msk"])
+                                                      no_reply_check_until=period["report_end_msk"],
+                                                      run_ai=run_ai_now,
+                                                      queue_all_ai_candidates=queue_all_ai_candidates)
             merge_analysis_stats(source_stats)
             collect_processed_records("wazzup", channel_id, source_stats)
             logger.info(f"Проблемных диалогов до дедупа: {len(issues)}")
@@ -338,6 +593,12 @@ def run() -> None:
         pass
     conn = get_connection()
     record_ai_processed_dialogs(conn, period["analysis_date"], ai_processed_records)
+    if ai_queue_records:
+        queued_count = enqueue_ai_analysis_candidates(conn, period["analysis_date"], ai_queue_records)
+        analysis_totals["ai_queued"] = queued_count
+        logger.info(f"Поставлено в AI-очередь: {queued_count}")
+    queue_counts = get_ai_queue_counts(conn)
+    analysis_totals["ai_queue_total"] = queue_counts["total"]
     if return_task_next_offset is not None:
         set_integration_state(conn, return_task_offset_key, str(return_task_next_offset))
     fresh_issues, total_count = dedup_and_record(conn, all_issues)
@@ -356,7 +617,7 @@ def run() -> None:
 
     stats = ai_stats()
     logger.info(f"AI стат: всего {stats['calls']}, упало {stats['failures']}")
-    ai_incomplete = analysis_totals["ai_processed"] < analysis_totals["ai_candidates"]
+    ai_incomplete = run_ai_now and analysis_totals["ai_processed"] < analysis_totals["ai_candidates"]
     if (
         stats["calls"] > 0 and (stats["failures"] / stats["calls"]) > AI_FAILURE_THRESHOLD
     ) or ai_incomplete:
@@ -371,11 +632,63 @@ def run() -> None:
 
     # ── Отчёт ─────────────────────────────────────────────────────────────────
     logger.info("=" * 60)
-    report = format_report(fresh_issues, total_count, period, run_status, weekly_top, analysis_totals)
-    logger.info(report)
-    additional_report = format_additional_report(fresh_issues)
-    if additional_report:
-        logger.info(additional_report)
+    if run_mode == "code" and not run_ai_now:
+        no_reply_issues = filter_issues_by_categories(fresh_issues, NO_REPLY_CATEGORIES)
+        code_issues = filter_issues_by_categories(fresh_issues, CODE_SERVICE_CATEGORIES)
+        reports = []
+        no_reply_report = ""
+        if no_reply_issues:
+            no_reply_report = format_report(
+                no_reply_issues,
+                _problem_count(no_reply_issues),
+                period,
+                run_status,
+                weekly_top,
+                None,
+                title="📭 STAX: Нет ответа",
+            )
+            reports.append(no_reply_report)
+            extra = format_additional_report(no_reply_issues)
+            if extra:
+                reports.append(extra)
+
+        code_report = ""
+        if (
+            code_issues
+            or analysis_totals["ai_queued"]
+            or analysis_totals["ai_queue_total"]
+            or analysis_totals["return_task_cards_loaded"]
+            or analysis_totals["loaded"]
+        ):
+            code_report = format_report(
+                code_issues,
+                _problem_count(code_issues),
+                period,
+                run_status,
+                weekly_top,
+                analysis_totals,
+                title="🧰 STAX: Кодовые проверки",
+            )
+            reports.append(code_report)
+            extra = format_additional_report(code_issues)
+            if extra:
+                reports.append(extra)
+    else:
+        report = format_report(
+            fresh_issues,
+            total_count,
+            period,
+            run_status,
+            weekly_top,
+            analysis_totals,
+        )
+        reports = [report]
+        additional_report = format_additional_report(fresh_issues)
+        if additional_report:
+            reports.append(additional_report)
+
+    for report in reports:
+        logger.info(report)
     sla_report = ""
     if analysis_totals["dispatcher_sla_checked"]:
         sla_report = format_slow_responses_text_report(period, analysis_totals["slow_responses"])
@@ -384,7 +697,8 @@ def run() -> None:
             slow_responses_json_report(analysis_totals["slow_responses"]),
             ensure_ascii=False,
         ))
-    send_telegram_messages([report, additional_report, sla_report])
+    reports.append(sla_report)
+    send_telegram_messages(reports)
     logger.info("Готово ✓")
 
 

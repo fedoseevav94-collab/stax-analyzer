@@ -2,6 +2,8 @@
 PostgreSQL — подключение и репозиторий.
 Заменяет SQLite. Использует psycopg2.
 """
+import json
+
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timedelta
@@ -87,6 +89,45 @@ def init_db(conn) -> None:
                 value TEXT,
                 updated_at TIMESTAMP NOT NULL
             )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ai_analysis_queue (
+                id BIGSERIAL PRIMARY KEY,
+                analysis_date DATE NOT NULL,
+                source TEXT NOT NULL,
+                source_scope TEXT NOT NULL,
+                source_name TEXT,
+                conversation_id TEXT NOT NULL,
+                last_message_key TEXT NOT NULL,
+                priority TEXT NOT NULL DEFAULT 'P3',
+                reason TEXT,
+                payload JSONB NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                queued_at TIMESTAMP NOT NULL,
+                processed_at TIMESTAMP,
+                last_error TEXT,
+                UNIQUE(source, source_scope, conversation_id, last_message_key)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_analysis_queue_pick
+            ON ai_analysis_queue(status, priority, queued_at)
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ai_quality_report_items (
+                id BIGSERIAL PRIMARY KEY,
+                report_date DATE NOT NULL,
+                conversation_id TEXT NOT NULL,
+                issue JSONB NOT NULL,
+                problem_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP NOT NULL,
+                reported_at TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_quality_report_items_pending
+            ON ai_quality_report_items(report_date, reported_at)
         """)
     conn.commit()
     logger.info("БД инициализирована")
@@ -206,6 +247,200 @@ def set_integration_state(conn, key: str, value: str) -> None:
                 value = EXCLUDED.value,
                 updated_at = EXCLUDED.updated_at
         """, (key, str(value), now))
+
+
+def enqueue_ai_analysis_candidates(conn, analysis_date, records: list[dict]) -> int:
+    if not records:
+        return 0
+
+    now = datetime.now(MoscowTZ)
+    rows = []
+    for row in records:
+        payload = row.get("payload")
+        conversation_id = clean_text_or_empty(row.get("conversation_id"))
+        last_message_key = clean_text_or_empty(row.get("last_message_key"))
+        if not payload or not conversation_id or not last_message_key:
+            continue
+        rows.append((
+            analysis_date,
+            clean_text_or_empty(row.get("source")),
+            clean_text_or_empty(row.get("source_scope")),
+            clean_text_or_empty(row.get("source_name")),
+            conversation_id,
+            last_message_key,
+            clean_text_or_empty(row.get("priority")) or "P3",
+            clean_text_or_empty(row.get("reason")),
+            psycopg2.extras.Json(
+                payload,
+                dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
+            ),
+            now,
+        ))
+    if not rows:
+        return 0
+
+    with conn.cursor() as cur:
+        psycopg2.extras.execute_values(cur, """
+            INSERT INTO ai_analysis_queue (
+                analysis_date, source, source_scope, source_name,
+                conversation_id, last_message_key, priority, reason,
+                payload, queued_at
+            )
+            VALUES %s
+            ON CONFLICT (source, source_scope, conversation_id, last_message_key)
+            DO UPDATE SET
+                analysis_date = EXCLUDED.analysis_date,
+                source_name = EXCLUDED.source_name,
+                priority = EXCLUDED.priority,
+                reason = EXCLUDED.reason,
+                payload = EXCLUDED.payload,
+                queued_at = EXCLUDED.queued_at,
+                last_error = NULL
+            WHERE ai_analysis_queue.status <> 'processed'
+        """, rows)
+        return cur.rowcount
+
+
+def fetch_ai_queue_batch(conn, limit: int, include_low_priority: bool = False) -> list[dict]:
+    priority_filter = "" if include_low_priority else "AND priority <> 'P3'"
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"""
+            SELECT id, analysis_date, source, source_scope, source_name, conversation_id,
+                   last_message_key, priority, reason, payload
+            FROM ai_analysis_queue
+            WHERE status = 'pending'
+              AND attempts < 5
+              {priority_filter}
+            ORDER BY
+                CASE priority WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
+                queued_at ASC,
+                id ASC
+            LIMIT %s
+        """, (int(limit),))
+        rows = cur.fetchall()
+
+    result = []
+    for row in rows:
+        payload = row.get("payload")
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        item = dict(row)
+        item["payload"] = payload
+        result.append(item)
+    return result
+
+
+def store_ai_quality_report_items(conn, report_date, issues: list[dict]) -> int:
+    if not issues:
+        return 0
+
+    now = datetime.now(MoscowTZ)
+    rows = []
+    for issue in issues:
+        conversation_id = clean_text_or_empty(issue.get("conversation_id"))
+        problems = issue.get("problems") or []
+        if not conversation_id or not problems:
+            continue
+        rows.append((
+            report_date,
+            conversation_id,
+            psycopg2.extras.Json(
+                issue,
+                dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
+            ),
+            len(problems),
+            now,
+        ))
+    if not rows:
+        return 0
+
+    with conn.cursor() as cur:
+        psycopg2.extras.execute_values(cur, """
+            INSERT INTO ai_quality_report_items (
+                report_date, conversation_id, issue, problem_count, created_at
+            )
+            VALUES %s
+        """, rows)
+        return cur.rowcount
+
+
+def fetch_pending_ai_quality_report_items(conn, report_date) -> tuple[list[int], list[dict]]:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT id, issue
+            FROM ai_quality_report_items
+            WHERE report_date = %s
+              AND reported_at IS NULL
+            ORDER BY id ASC
+        """, (report_date,))
+        rows = cur.fetchall()
+
+    ids = []
+    issues = []
+    for row in rows:
+        ids.append(int(row["id"]))
+        issue = row.get("issue")
+        if isinstance(issue, str):
+            issue = json.loads(issue)
+        issues.append(dict(issue))
+    return ids, issues
+
+
+def mark_ai_quality_report_items_reported(conn, item_ids: list[int]) -> None:
+    if not item_ids:
+        return
+    now = datetime.now(MoscowTZ)
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE ai_quality_report_items
+            SET reported_at = %s
+            WHERE id = ANY(%s)
+        """, (now, list(item_ids)))
+
+
+def mark_ai_queue_processed(conn, queue_ids: list[int]) -> None:
+    if not queue_ids:
+        return
+    now = datetime.now(MoscowTZ)
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE ai_analysis_queue
+            SET status = 'processed',
+                processed_at = %s,
+                last_error = NULL
+            WHERE id = ANY(%s)
+        """, (now, list(queue_ids)))
+
+
+def mark_ai_queue_attempted(conn, queue_ids: list[int], error: str = "") -> None:
+    if not queue_ids:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE ai_analysis_queue
+            SET attempts = attempts + 1,
+                last_error = %s
+            WHERE id = ANY(%s)
+              AND status = 'pending'
+        """, (clean_text_or_empty(error)[:500], list(queue_ids)))
+
+
+def get_ai_queue_counts(conn) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT priority, COUNT(*)
+            FROM ai_analysis_queue
+            WHERE status = 'pending'
+            GROUP BY priority
+        """)
+        rows = cur.fetchall()
+    counts = {"P1": 0, "P2": 0, "P3": 0, "total": 0}
+    for priority, count in rows:
+        key = clean_text_or_empty(priority).upper() or "P3"
+        value = int(count or 0)
+        counts[key] = counts.get(key, 0) + value
+        counts["total"] += value
+    return counts
 
 
 def clean_text_or_empty(value) -> str:

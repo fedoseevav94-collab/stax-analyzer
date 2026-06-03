@@ -28,6 +28,8 @@ DEDUP_WINDOW_DAYS = int(os.environ.get("DEDUP_WINDOW_DAYS", "").strip() or "14")
 AI_BATCH_DELAY_SECONDS = int(os.environ.get("AI_BATCH_DELAY_SECONDS", "").strip() or "20")
 RETURN_TASKS_CHAT_ID = os.environ.get("RETURN_TASKS_CHAT_ID", "").strip() or "-1002393474582"
 RETURN_TASKS_UPDATES_LIMIT = int(os.environ.get("RETURN_TASKS_UPDATES_LIMIT", "").strip() or "100")
+AI_QUEUE_DAY_LIMIT = int(os.environ.get("AI_QUEUE_DAY_LIMIT", "").strip() or "18")
+AI_QUEUE_NIGHT_LIMIT = int(os.environ.get("AI_QUEUE_NIGHT_LIMIT", "").strip() or "60")
 
 # ── API endpoints ─────────────────────────────────────────────────────────────
 TG_ENDPOINTS = {

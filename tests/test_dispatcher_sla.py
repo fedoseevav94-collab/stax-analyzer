@@ -132,7 +132,11 @@ def test_sla_text_and_json_reports_include_conversation_url():
     text_report = format_slow_responses_text_report(period, slow_responses)
     json_report = slow_responses_json_report(slow_responses)
 
-    assert "Ссылка на диалог: https://web.stax.ru/react/telegram/chat/15/123456" in text_report
+    assert "⏱ Задержки ответов диспетчеров" in text_report
+    assert "SLA: 09:30–21:00 МСК, порог 20+ мин" in text_report
+    assert "Диалог: https://web.stax.ru/react/telegram/chat/15/123456" in text_report
+    assert "Комментарий расчёта" not in text_report
+    assert "message_index" not in text_report
     assert json_report["slow_responses"][0]["conversation_url"] == (
         "https://web.stax.ru/react/telegram/chat/15/123456"
     )
